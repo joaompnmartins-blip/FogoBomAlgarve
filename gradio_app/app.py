@@ -3043,7 +3043,7 @@ app.launch(
     server_name="0.0.0.0",
     server_port=7860,
     auth=None,
-    allowed_paths=["./images", ".", str(MEDIA_DIR), str(BP_MEDIA_DIR)],
+    allowed_paths=[str(BASE_DIR / "images"), str(BASE_DIR), str(MEDIA_DIR), str(BP_MEDIA_DIR)],
     share=False,
     theme=gr.themes.Default(primary_hue="stone", secondary_hue="orange"),
     css=CUSTOM_CSS,
