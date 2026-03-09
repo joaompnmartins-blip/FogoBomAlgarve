@@ -115,8 +115,8 @@ def build_weather_map_iframe() -> str:
     ></iframe>
     """
 
-BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "backend"))
-sys.path.insert(0, BASE_DIR)
+DJANGO_BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "backend"))
+sys.path.insert(0, DJANGO_BASE_DIR)
 
 os.environ.setdefault("DJANGO_SETTINGS_MODULE", "fire_mgmt.settings")
 
@@ -2207,7 +2207,7 @@ def create_main_interface():
         
         # Header com info do utilizador e logout
         gr.Image(
-            value=str(Path(BASE_DIR) / "images" / "banner_FBAlgarve.png"), 
+            value=str(BASE_DIR / "images" / "banner_FBAlgarve.png"), 
             show_label=False, 
             container=False, 
             interactive=False,
