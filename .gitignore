@@ -1,0 +1,48 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+
+# Virtual environment
+venv/
+.venv/
+env/
+
+# Django
+*.log
+local_settings.py
+staticfiles/
+media/
+
+# Database
+*.sqlite3
+db.sqlite3
+data_backup.json
+
+# Environment variables
+.env
+.env.local
+.env.production
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# Old versions (keep only current code)
+app_versao*/
+leaflet_map_versao*/
+leaflet_weather_map_*.html
+leaflet_map_Claude.odt
+chatGpt.odt
+deploy_app_railway.odt
+Fire_Management_Claude.odt
