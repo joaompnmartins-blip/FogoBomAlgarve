@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8"/>
+  <link rel="stylesheet"
+    href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <link rel="stylesheet"
+    href="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.css"/>
+
+  <style>
+    body {
+      margin: 0;
+      padding: 0;
+    }
+    #map { 
+      height: 500px; 
+      width: 100%;
+    }
+    .parcel-popup {
+      font-family: Arial, sans-serif;
+    }
+    .parcel-popup h3 {
+      margin: 0 0 10px 0;
+      color: #d32f2f;
+    }
+    .parcel-popup p {
+      margin: 5px 0;
+    }
+    .legend {
+      background: white;
+      padding: 10px;
+      border-radius: 5px;
+      box-shadow: 0 0 15px rgba(0,0,0,0.2);
+    }
+    .legend h4 {
+      margin: 0 0 10px 0;
+    }
+    .legend-item {
+      margin: 5px 0;
+    }
+    .legend-color {
+      display: inline-block;
+      width: 20px;
+      height: 20px;
+      margin-right: 5px;
+      border: 1px solid #333;
+      vertical-align: middle;
+    }
+  </style>
+</head>
+<body>
+<div id="map"></div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.js"></script>
+
+<script>
+  // Initialize map
+  const map = L.map('map').setView([37.2555, -8.3965], 10);
+
+  // Add tile layer
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    attribution: '© OpenStreetMap contributors',
+    maxZoom: 19
+  }).addTo(map);
+
+  // Layer for newly drawn items
+  const drawnItems = new L.FeatureGroup();
+  map.addLayer(drawnItems);
+  
+  // Layer for existing parcels from database
+  const existingParcels = new L.FeatureGroup();
+  map.addLayer(existingParcels);
+
+  // Add drawing controls
+  const drawControl = new L.Control.Draw({
+    draw: {
+      polyline: false,
+      rectangle: false,
+      circle: false,
+      marker: false,
+      polygon: {
+        allowIntersection: false,
+        showArea: true
+      }
+    },
+    edit: {
+      featureGroup: drawnItems,
+      remove: true
+    }
+  });
+
+  map.addControl(drawControl);
+
+  // Add legend
+  const legend = L.control({position: 'bottomright'});
+  
+  legend.onAdd = function (map) {
+    const div = L.DomUtil.create('div', 'legend');
+    div.innerHTML = `
+      <h4>Risk Levels</h4>
+      <div class="legend-item">
+        <span class="legend-color" style="background: #d32f2f;"></span>
+        High Risk
+      </div>
+      <div class="legend-item">
+        <span class="legend-color" style="background: #f57c00;"></span>
+        Medium Risk
+      </div>
+      <div class="legend-item">
+        <span class="legend-color" style="background: #388e3c;"></span>
+        Low Risk
+      </div>
+    `;
+    return div;
+  };
+  
+  legend.addTo(map);
+
+  // Handle new polygon creation
+  map.on(L.Draw.Event.CREATED, function (e) {
+    // Clear previous drawing
+    drawnItems.clearLayers();
+    
+    // Add new layer
+    drawnItems.addLayer(e.layer);
+
+    // Get GeoJSON and send to parent
+    const geojson = e.layer.toGeoJSON();
+    
+    console.log('Polygon created, sending to parent:', geojson.geometry);
+    
+    window.parent.postMessage(
+      { type: "parcel_geometry", data: geojson.geometry },
+      "*"
+    );
+  });
+  
+  // Handle polygon editing
+  map.on(L.Draw.Event.EDITED, function (e) {
+    const layers = e.layers;
+    layers.eachLayer(function (layer) {
+      const geojson = layer.toGeoJSON();
+      window.parent.postMessage(
+        { type: "parcel_geometry", data: geojson.geometry },
+        "*"
+      );
+    });
+  });
+  
+  // Handle polygon deletion
+  map.on(L.Draw.Event.DELETED, function (e) {
+    window.parent.postMessage(
+      { type: "parcel_geometry", data: null },
+      "*"
+    );
+  });
+  
+  // Function to get color based on risk level
+  function getRiskColor(risk) {
+    switch(risk) {
+      case 'High': return '#d32f2f';
+      case 'Medium': return '#f57c00';
+      case 'Low': return '#388e3c';
+      default: return '#757575';
+    }
+  }
+  
+  // Function to load existing parcels
+  function loadParcels(geojsonData) {
+    if (!geojsonData) return;
+
+  // Limpar camadas anteriores para evitar duplicação
+    existingParcels.clearLayers();
+    
+    console.log('A carregar parcelas:', geojsonData);
+    
+    // Add parcels to map
+    L.geoJSON(geojsonData, {
+      style: function(feature) {
+        return {
+          color: getRiskColor(feature.properties.risk_level),
+          weight: 2,
+          fillOpacity: 0.3,
+          fillColor: getRiskColor(feature.properties.risk_level)
+        };
+      },
+      onEachFeature: function(feature, layer) {
+        const props = feature.properties;
+        
+        // Create popup content
+        const popupContent = `
+          <div class="parcel-popup">
+            <h3>🔥 ${props.name}</h3>
+            <p><strong>ID:</strong> ${props.id}</p>
+            <p><strong>Vegetation:</strong> ${props.vegetation_type}</p>
+            <p><strong>Risk Level:</strong> <span style="color: ${getRiskColor(props.risk_level)}; font-weight: bold;">${props.risk_level}</span></p>
+          </div>
+        `;
+        
+        layer.bindPopup(popupContent);
+        
+        // Add tooltip on hover
+        layer.bindTooltip(props.name, {
+          permanent: false,
+          direction: 'top'
+        });
+        
+        // Add to existing parcels layer
+        existingParcels.addLayer(layer);
+      }
+    });
+    
+    // Fit map bounds to show all parcels
+    if (existingParcels.getLayers().length > 0) {
+      try {
+        map.fitBounds(existingParcels.getBounds(), { 
+          padding: [50, 50],
+          maxZoom: 12
+        });
+      } catch (e) {
+        console.log('Could not fit bounds:', e);
+      }
+    }
+    
+    console.log('Loaded', existingParcels.getLayers().length, 'parcels');
+  }
+  
+  // Listen for messages from parent window
+ window.addEventListener('message', function(event) {
+    if (event.data && event.data.type === 'load_parcels') {
+      console.log('Mensagem load_parcels recebida no Iframe');
+      loadParcels(event.data.geojson);
+    }
+  });
+  
+  // Request parcels on initial load
+  window.addEventListener('load', function() {
+    console.log('Map loaded, requesting parcels');
+    window.parent.postMessage({ type: 'request_parcels' }, '*');
+  });
+  
+  console.log('Leaflet pronto. Aguardando dados...');
+  // Função para avisar o Gradio que o mapa está pronto
+  function requestParcels() {
+    console.log("Mapa pronto. Solicitando dados ao Gradio...");
+    window.parent.postMessage({ type: "request_parcels" }, "*");
+  }
+
+  // Executar ao carregar e também definir um intervalo de segurança
+  window.onload = requestParcels;
+  
+  // Caso o Gradio demore a carregar o listener, tentamos novamente a cada 2 segundos
+  const retryInterval = setInterval(() => {
+    if (existingParcels.getLayers().length === 0) {
+        requestParcels();
+    } else {
+        clearInterval(retryInterval);
+    }
+  }, 2000);
+</script>
+</body>
+</html>

@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8"/>
+  <title>Registo de Parcelas - Algarve</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.css"/>
+  <style>
+    body { margin: 0; padding: 0; }
+    #map { height: 500px; width: 100%; }
+    /* Estilo da Legenda */
+    .legend { 
+        background: white; 
+        padding: 10px; 
+        border-radius: 8px; 
+        box-shadow: 0 1px 5px rgba(0,0,0,0.4); 
+        line-height: 18px; 
+        color: #333; 
+        font-family: Arial, sans-serif; 
+    }
+    .legend h4 { margin: 0 0 8px 0; font-size: 14px; border-bottom: 1px solid #ddd; padding-bottom: 4px; }
+    .legend-item { display: flex; align-items: center; margin-bottom: 4px; font-size: 12px; }
+    .legend-color { width: 16px; height: 16px; margin-right: 8px; border: 1px solid #666; opacity: 0.8; }
+  </style>
+</head>
+<body>
+<div id="map"></div>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.js"></script>
+<script>
+  // --- Mapas Base ---
+  const googleSat = L.tileLayer('http://{s}.google.com/vt/lyrs=s&x={x}&y={y}&z={z}', {
+    maxZoom: 20, subdomains:['mt0','mt1','mt2','mt3'], attribution: '© Google Maps'
+  });
+  
+  const osm = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    attribution: '© OpenStreetMap contributors'
+  });
+
+  const map = L.map('map', { 
+    center: [37.2555, -8.3965], 
+    zoom: 10, 
+    layers: [googleSat] 
+  });
+
+  // Controlo de Camadas (Base Maps)
+  const baseMaps = {
+    "Satélite (Google)": googleSat,
+    "OpenStreetMap": osm
+  };
+  L.control.layers(baseMaps).addTo(map);
+
+  // Layer for NEW parcel being drawn (editable)
+  const drawnItems = new L.FeatureGroup().addTo(map);
+  
+  // Layer for EXISTING parcels (view-only)
+  let parcelsLayer = new L.FeatureGroup().addTo(map);
+  let parcelsFirstLoad = true;  // Only auto-fit bounds on first load
+
+  // Barra de Desenho - ONLY for NEW parcels
+  const drawControl = new L.Control.Draw({
+    edit: { 
+      featureGroup: drawnItems,
+      edit: true,
+      remove: true
+    },
+    draw: { 
+      polygon: true, 
+      polyline: false, 
+      rectangle: true, 
+      circle: false, 
+      marker: false, 
+      circlemarker: false 
+    }
+  });
+  map.addControl(drawControl);
+
+  // Função de Cores por Proprietário
+  function getOwnerColor(info) { 
+    return (info === 'Sim' || info === 'yes') ? '#2e7d32' : '#c62828'; 
+  }
+
+  // --- Legenda ---
+  const legend = L.control({ position: 'bottomright' });
+  legend.onAdd = function() {
+    const div = L.DomUtil.create('div', 'legend');
+    div.innerHTML = `
+      <h4>Proprietário Info</h4>
+      <div class="legend-item"><div class="legend-color" style="background:#2e7d32"></div> Sim / Identificado</div>
+      <div class="legend-item"><div class="legend-color" style="background:#c62828"></div> Não / S. Info</div>
+    `;
+    return div;
+  };
+  legend.addTo(map);
+
+  // Função para carregar as parcelas EXISTENTES (VIEW-ONLY)
+  function loadParcels(geojson) {
+    // Clear only the existing parcels layer, NOT the drawnItems (new parcel)
+    if (parcelsLayer) { 
+      map.removeLayer(parcelsLayer); 
+    }
+    
+    parcelsLayer = L.geoJSON(geojson, {
+      style: (f) => ({
+        color: getOwnerColor(f.properties.tem_proprietario),
+        weight: 2, 
+        fillOpacity: 0.3,
+        fillColor: getOwnerColor(f.properties.tem_proprietario)
+      }),
+      onEachFeature: (f, l) => {
+        const props = f.properties;
+        const popupContent = `
+          <div style="font-family: Arial; min-width: 150px;">
+            <b style="font-size: 14px; color: #333;">${props.name || 'Sem Nome'}</b><br>
+            <hr style="margin: 5px 0;">
+            <b>🌲 Vegetação:</b> ${props.vegetation_type}<br>
+            <b>🗝️ Infraestrutura:</b> ${props.infraestrutura}<br>
+            <b>👤 Responsável:</b> ${props.responsavel || 'N/A'}<br>
+            <b>🏡 Info Proprietário:</b> ${props.tem_proprietario === 'yes' || props.tem_proprietario === 'Sim' ? 'Sim' : 'Não'}
+          </div>
+        `;
+        l.bindPopup(popupContent);
+        
+        // NO CLICK EDITING for existing parcels - view only!
+        // Users can only see popup, not edit
+      }
+    }).addTo(map);
+    
+    // Zoom to show all parcels only on first load
+    if (geojson.features && geojson.features.length > 0 && parcelsFirstLoad) {
+      map.fitBounds(parcelsLayer.getBounds(), { padding: [30, 30] });
+      parcelsFirstLoad = false;
+    }
+  }
+
+  // --- Area calculation (Shoelace with WGS84 -> metres correction) ---
+  function calcAreaHa(geometry) {
+    if (!geometry || geometry.type !== 'Polygon') return null;
+    const coords = geometry.coordinates[0];
+    const toRad = d => d * Math.PI / 180;
+    const R = 6371000;
+    let area = 0;
+    const n = coords.length;
+    for (let i = 0; i < n - 1; i++) {
+      const lon1 = toRad(coords[i][0]),   lat1 = toRad(coords[i][1]);
+      const lon2 = toRad(coords[i+1][0]), lat2 = toRad(coords[i+1][1]);
+      area += (lon2 - lon1) * (2 + Math.sin(lat1) + Math.sin(lat2));
+    }
+    return Math.round(Math.abs(area) * R * R / 2 / 10000 * 100) / 100;
+  }
+
+  const ALGARVE_CONCELHOS = [
+    "Albufeira","Alcoutim","Aljezur","Castro Marim","Faro",
+    "Lagoa","Lagos","Loulé","Monchique","Olhão",
+    "Portimão","São Brás de Alportel","Silves","Tavira",
+    "Vila do Bispo","Vila Real de Santo António"
+  ];
+
+  function normalizeName(s) {
+    return s.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/\s+/g, ' ').trim();
+  }
+
+  function getCentroid(geometry) {
+    if (!geometry || geometry.type !== 'Polygon') return null;
+    const coords = geometry.coordinates[0];
+    let lat = 0, lon = 0;
+    const n = coords.length - 1;
+    for (let i = 0; i < n; i++) { lon += coords[i][0]; lat += coords[i][1]; }
+    return { lat: lat / n, lon: lon / n };
+  }
+
+  function lookupConcelho(geometry, callback) {
+    const c = getCentroid(geometry);
+    if (!c) { callback(null); return; }
+    const url = `https://nominatim.openstreetmap.org/reverse?format=json&lat=${c.lat}&lon=${c.lon}&zoom=14&addressdetails=1`;
+    fetch(url, { headers: { 'Accept-Language': 'pt' } })
+      .then(r => r.json())
+      .then(data => {
+        const addr = data.address || {};
+        const raw = addr.municipality || addr.city || addr.town || addr.village || '';
+        const normRaw = normalizeName(raw);
+        const match = ALGARVE_CONCELHOS.find(c => normalizeName(c) === normRaw);
+        console.log('Nominatim raw:', raw, '| matched:', match);
+        callback(match || null);
+      })
+      .catch(() => callback(null));
+  }
+
+  function sendParcelData(geometry) {
+    const area_ha = calcAreaHa(geometry);
+    lookupConcelho(geometry, function(concelho) {
+      window.parent.postMessage({
+        type: 'parcel_geometry',
+        data: geometry,
+        area_ha: area_ha,
+        concelho: concelho
+      }, '*');
+    });
+  }
+
+  // --- Eventos para parcela editável ---
+  map.on('draw:created', (e) => {
+    drawnItems.clearLayers();
+    drawnItems.addLayer(e.layer);
+    sendParcelData(e.layer.toGeoJSON().geometry);
+  });
+
+  map.on('draw:edited', function (e) {
+    e.layers.eachLayer(function (layer) {
+      sendParcelData(layer.toGeoJSON().geometry);
+    });
+  });
+
+  map.on('draw:deleted', function (e) {
+    window.parent.postMessage({ type: 'parcel_geometry', data: null, area_ha: null, concelho: null }, '*');
+  });
+
+  // Receber mensagens do Gradio
+  window.addEventListener('message', (e) => {
+
+    if (e.data.type === 'load_parcels') {
+      loadParcels(e.data.geojson);
+    }
+
+    // Load selected parcel geometry into the editable drawnItems layer
+    if (e.data.type === 'load_parcel_into_drawn') {
+      try {
+        const geom = e.data.geometry;
+        if (!geom) return;
+        drawnItems.clearLayers();
+        const coords = geom.coordinates[0].map(c => [c[1], c[0]]);
+        const layer = L.polygon(coords, { color: '#3b82f6', weight: 3, fillOpacity: 0.3, fillColor: '#3b82f6' });
+        drawnItems.addLayer(layer);
+        const bounds = drawnItems.getBounds();
+        if (bounds.isValid()) map.fitBounds(bounds, { padding: [60, 60], maxZoom: 17 });
+      } catch(err) {
+        console.warn('load_parcel_into_drawn error:', err);
+      }
+    }
+
+    if (e.data.type === 'clear_drawn_items') {
+      drawnItems.clearLayers();
+    }
+
+    if (e.data.type === 'reset_view') {
+      if (parcelsLayer && parcelsLayer.getLayers().length > 0) {
+        map.fitBounds(parcelsLayer.getBounds(), { padding: [50, 50] });
+      }
+    }
+
+    // Zoom to geometry sent by Gradio after parcel selection
+    if (e.data.type === 'zoom_to_geometry') {
+      try {
+        const geom = e.data.geometry;
+        if (!geom) return;
+        const layer = L.geoJSON(geom);
+        const bounds = layer.getBounds();
+        if (bounds.isValid()) {
+          map.fitBounds(bounds, { padding: [60, 60], maxZoom: 17 });
+        }
+      } catch(err) {
+        console.warn('zoom_to_geometry error:', err);
+      }
+    }
+
+  });
+
+  // Request initial parcel data when map is ready
+  map.whenReady(() => {
+    window.parent.postMessage({type: 'request_parcels'}, '*');
+  });
+</script>
+</body>
+</html>

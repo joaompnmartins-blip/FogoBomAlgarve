@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="pt">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Fogo Bom Algarve</title>
+<link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=DM+Sans:wght@300;400&family=DM+Mono:wght@400&display=swap" rel="stylesheet">
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --fire:  #E84A0C;
+    --ember: #F97316;
+    --ash:   #1C1917;
+    --mist:  #78716C;
+    --bone:  #FAF7F5;
+  }
+
+  html, body {
+    width: 100%; height: 100%;
+    overflow: hidden;
+    background: var(--ash);
+    color: var(--bone);
+    cursor: none;
+  }
+
+  /* ── Custom cursor ── */
+  #cur  {
+    width: 10px; height: 10px;
+    background: var(--fire);
+    border-radius: 50%;
+    position: fixed; top: 0; left: 0;
+    pointer-events: none; z-index: 9999;
+    transform: translate(-50%,-50%);
+    mix-blend-mode: difference;
+  }
+  #cur-ring {
+    width: 34px; height: 34px;
+    border: 1.5px solid var(--ember);
+    border-radius: 50%;
+    position: fixed; top: 0; left: 0;
+    pointer-events: none; z-index: 9998;
+    transform: translate(-50%,-50%);
+    transition: left .18s ease, top .18s ease;
+    opacity: 0.55;
+  }
+
+  /* ── Fire background glow ── */
+  .fire-bg {
+    position: absolute; inset: 0; pointer-events: none;
+    background:
+      radial-gradient(ellipse 72% 58% at 50% 88%, rgba(232,74,12,.28) 0%, transparent 68%),
+      radial-gradient(ellipse 38% 28% at 50% 94%, rgba(249,115,22,.22) 0%, transparent 58%);
+    animation: breathe 4s ease-in-out infinite alternate;
+  }
+  @keyframes breathe {
+    from { opacity: .6; transform: scaleY(.96); }
+    to   { opacity: 1;  transform: scaleY(1.04); }
+  }
+
+  /* ── Sparks ── */
+  .sparks { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
+  .spark  {
+    position: absolute; bottom: -10px; border-radius: 50%; opacity: 0;
+    animation: rise linear infinite;
+  }
+  @keyframes rise {
+    0%   { transform: translateY(0) translateX(0) scale(1); opacity: .8; }
+    50%  { opacity: .45; }
+    100% { transform: translateY(-100vh) translateX(var(--drift,0px)) scale(0); opacity: 0; }
+  }
+
+  /* ── Content ── */
+  .stage {
+    position: relative; z-index: 2;
+    height: 100vh;
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    text-align: center;
+    padding: 40px 24px;
+    gap: 0;
+  }
+
+  .tag {
+    font-family: 'DM Mono', monospace;
+    font-size: 11px;
+    letter-spacing: .28em;
+    text-transform: uppercase;
+    color: var(--ember);
+    margin-bottom: 22px;
+    opacity: 0; animation: fadeUp .7s .1s forwards;
+  }
+
+  .title {
+    font-family: 'Bebas Neue', sans-serif;
+    font-size: clamp(72px, 13vw, 156px);
+    line-height: .88;
+    letter-spacing: .02em;
+    background: linear-gradient(160deg, #fff 35%, var(--ember) 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+    opacity: 0; animation: fadeUp .7s .22s forwards;
+  }
+
+  .sub {
+    font-family: 'Bebas Neue', sans-serif;
+    font-size: clamp(22px, 4vw, 48px);
+    color: var(--mist);
+    letter-spacing: .14em;
+    margin-top: 6px;
+    opacity: 0; animation: fadeUp .7s .34s forwards;
+  }
+
+  .divider {
+    width: 40px; height: 2px;
+    background: var(--fire);
+    margin: 26px auto 0;
+    opacity: 0; animation: fadeUp .7s .44s forwards;
+  }
+
+  .desc {
+    font-family: 'DM Sans', sans-serif;
+    font-size: 15px; font-weight: 300;
+    color: #A8A29E;
+    max-width: 420px;
+    line-height: 1.78;
+    margin-top: 22px;
+    opacity: 0; animation: fadeUp .7s .54s forwards;
+  }
+
+  /* ── ENTRAR button ── */
+  .btn-entrar {
+    font-family: 'Bebas Neue', sans-serif;
+    font-size: 22px;
+    letter-spacing: .22em;
+    color: var(--bone);
+    background: transparent;
+    border: 2px solid var(--fire);
+    padding: 16px 60px;
+    margin-top: 48px;
+    cursor: pointer;
+    position: relative; overflow: hidden;
+    outline: none;
+    transition: transform .2s, box-shadow .3s, color .3s;
+    opacity: 0; animation: fadeUp .7s .66s forwards;
+    text-decoration: none;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    line-height: 1;
+  }
+  .btn-entrar::before {
+    content: '';
+    position: absolute; inset: 0;
+    background: linear-gradient(135deg, var(--fire), var(--ember));
+    transform: translateX(-101%);
+    transition: transform .35s cubic-bezier(.4,0,.2,1);
+    z-index: -1;
+  }
+  .btn-entrar:hover {
+    transform: translateY(-3px);
+    box-shadow: 0 10px 36px rgba(232,74,12,.4);
+  }
+  .btn-entrar:hover::before { transform: translateX(0); }
+  .btn-entrar:active { transform: translateY(-1px); }
+
+  /* ── Version tag ── */
+  .version {
+    font-family: 'DM Mono', monospace;
+    font-size: 10px;
+    letter-spacing: .2em;
+    text-transform: uppercase;
+    color: rgba(255,255,255,.18);
+    position: fixed;
+    bottom: 24px; right: 32px;
+  }
+
+  @keyframes fadeUp {
+    from { opacity: 0; transform: translateY(22px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+</style>
+</head>
+<body>
+
+<div id="cur"></div>
+<div id="cur-ring"></div>
+
+<div class="fire-bg"></div>
+<div class="sparks" id="sparks"></div>
+
+<div class="stage">
+  <p class="tag">Sistema de Gestão de Fogo Controlado · Algarve</p>
+  <h1 class="title">FOGO<br>BOM</h1>
+  <p class="sub">ALGARVE</p>
+  <div class="divider"></div>
+  <p class="desc">
+    Plataforma integrada para planeamento, registo e acompanhamento
+    de operações de fogo controlado na região do Algarve.
+  </p>
+  <a class="btn-entrar" href="http://localhost:7860" id="btnEntrar">ENTRAR</a>
+</div>
+
+<p class="version">v0.1 beta</p>
+
+<script>
+// ── Cursor ──────────────────────────────────────────────────
+const cur  = document.getElementById('cur');
+const ring = document.getElementById('cur-ring');
+let mx = 0, my = 0;
+
+document.addEventListener('mousemove', e => {
+  mx = e.clientX; my = e.clientY;
+  cur.style.left = mx + 'px';
+  cur.style.top  = my + 'px';
+  ring.style.left = mx + 'px';
+  ring.style.top  = my + 'px';
+});
+
+// ── Sparks ──────────────────────────────────────────────────
+const sparksEl = document.getElementById('sparks');
+const colors   = ['#E84A0C','#F97316','#FCD34D','#FB923C'];
+for (let i = 0; i < 30; i++) {
+  const s   = document.createElement('div');
+  s.className = 'spark';
+  const sz  = 2 + Math.random() * 3;
+  const dur = 4  + Math.random() * 6;
+  const del = Math.random() * 8;
+  const drift = (Math.random() - .5) * 120;
+  const col = colors[Math.floor(Math.random() * colors.length)];
+  s.style.cssText = `left:${Math.random()*100}%;width:${sz}px;height:${sz}px;background:${col};animation-duration:${dur}s;animation-delay:${del}s;--drift:${drift}px`;
+  sparksEl.appendChild(s);
+}
+
+// ── Cursor expand on button hover ───────────────────────────
+document.getElementById('btnEntrar').addEventListener('mouseenter', () => {
+  cur.style.transform = 'translate(-50%,-50%) scale(2)';
+});
+document.getElementById('btnEntrar').addEventListener('mouseleave', () => {
+  cur.style.transform = 'translate(-50%,-50%) scale(1)';
+});
+</script>
+</body>
+</html>

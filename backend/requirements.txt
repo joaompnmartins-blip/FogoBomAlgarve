@@ -1,0 +1,6 @@
+Django==6.0.1
+djangorestframework
+psycopg2-binary
+shapely
+gradio
+gunicorn

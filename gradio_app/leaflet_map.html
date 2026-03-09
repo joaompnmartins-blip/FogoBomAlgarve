@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8"/>
+  <title>Gestão de Fogo Total - Algarve</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.css"/>
+  <style>
+    body { margin: 0; padding: 0; }
+    #map { height: 500px; width: 100%; }
+    /* Estilo da Legenda */
+    .legend { 
+        background: white; 
+        padding: 10px; 
+        border-radius: 8px; 
+        box-shadow: 0 1px 5px rgba(0,0,0,0.4); 
+        line-height: 18px; 
+        color: #333; 
+        font-family: Arial, sans-serif; 
+    }
+    .legend h4 { margin: 0 0 8px 0; font-size: 14px; border-bottom: 1px solid #ddd; padding-bottom: 4px; }
+    .legend-item { display: flex; align-items: center; margin-bottom: 4px; font-size: 12px; }
+    .legend-color { width: 16px; height: 16px; margin-right: 8px; border: 1px solid #666; opacity: 0.8; }
+  </style>
+</head>
+<body>
+<div id="map"></div>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.js"></script>
+<script>
+  // --- Mapas Base ---
+  const googleSat = L.tileLayer('http://{s}.google.com/vt/lyrs=s&x={x}&y={y}&z={z}', {
+    maxZoom: 20, subdomains:['mt0','mt1','mt2','mt3'], attribution: '© Google Maps'
+  });
+  
+  const osm = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    attribution: '© OpenStreetMap contributors'
+  });
+
+  const map = L.map('map', { 
+    center: [37.2555, -8.3965], 
+    zoom: 10, 
+    layers: [googleSat] 
+  });
+
+  // Controlo de Camadas (Base Maps)
+  const baseMaps = {
+    "Satélite (Google)": googleSat,
+    "OpenStreetMap": osm
+  };
+  L.control.layers(baseMaps).addTo(map);
+
+  const drawnItems = new L.FeatureGroup().addTo(map);
+  let parcelsLayer = new L.FeatureGroup().addTo(map);
+
+  // Barra de Desenho
+  const drawControl = new L.Control.Draw({
+    edit: { featureGroup: drawnItems },
+    draw: { polygon: true, polyline: false, rectangle: true, circle: false, marker: false, circlemarker: false }
+  });
+  map.addControl(drawControl);
+
+  // Função de Cores por Proprietário
+  function getOwnerColor(info) { 
+    // Aceita 'yes' (do DB) ou 'Sim' (do Radio)
+    return (info === 'Sim' || info === 'yes') ? '#2e7d32' : '#c62828'; 
+  }
+
+  // --- Legenda ---
+  const legend = L.control({ position: 'bottomright' });
+  legend.onAdd = function() {
+    const div = L.DomUtil.create('div', 'legend');
+    div.innerHTML = `
+      <h4>Proprietário Info</h4>
+      <div class="legend-item"><div class="legend-color" style="background:#2e7d32"></div> Sim / Identificado</div>
+      <div class="legend-item"><div class="legend-color" style="background:#c62828"></div> Não / S. Info</div>
+    `;
+    return div;
+  };
+  legend.addTo(map);
+
+  // Função para carregar as parcelas
+  function loadParcels(geojson) {
+    drawnItems.clearLayers();
+    if (parcelsLayer) { map.removeLayer(parcelsLayer); }
+    
+    parcelsLayer = L.geoJSON(geojson, {
+        style: (f) => ({
+            color: getOwnerColor(f.properties.tem_proprietario),
+            weight: 2, 
+            fillOpacity: 0.4, 
+            fillColor: getOwnerColor(f.properties.tem_proprietario)
+        }),
+        onEachFeature: (f, l) => {
+            const props = f.properties;
+            const popupContent = `
+                <div style="font-family: Arial; min-width: 150px;">
+                    <b style="font-size: 14px; color: #333;">${props.name || 'Sem Nome'}</b><br>
+                    <hr style="margin: 5px 0;">
+                    <b>🌲 Vegetação:</b> ${props.vegetation_type}<br>
+                    <b>🏗️ Infraestruturação:</b> ${props.infraestrutura}<br>
+                    <b>👤 Responsável Parcela:</b> ${props.responsavel || 'N/A'}<br>
+                    <b>🏡 Info Proprietário:</b> ${props.tem_proprietario === 'yes' || props.tem_proprietario === 'Sim' ? 'Sim' : 'Não'}
+                </div>
+            `;
+            l.bindPopup(popupContent);
+        }
+    }).addTo(map);
+    
+    if (geojson.features.length > 0) map.fitBounds(parcelsLayer.getBounds());
+  }
+
+  function loadParcels(geojson) {
+    drawnItems.clearLayers(); 
+    if (parcelsLayer) { map.removeLayer(parcelsLayer); }
+
+    parcelsLayer = L.geoJSON(geojson, {
+        style: (f) => ({ color: getOwnerColor(f.properties.tem_proprietario), fillOpacity: 0.4 }),
+        onEachFeature: (f, l) => {
+            l.on('click', function() {
+                // Ao clicar numa parcela no mapa, ela torna-se editável
+                drawnItems.clearLayers();
+                const editLayer = L.geoJSON(f).getLayers()[0];
+                drawnItems.addLayer(editLayer);
+            });
+            l.bindPopup(`<b>${f.properties.name}</b>`);
+        }
+    }).addTo(map);
+}
+
+  // --- Eventos ---
+  map.on('draw:created', (e) => {
+    const layer = e.layer;
+    drawnItems.clearLayers();
+    drawnItems.addLayer(layer);
+    window.parent.postMessage({ type: 'parcel_geometry', data: layer.toGeoJSON().geometry }, '*');
+  });
+// Escuta quando a geometria editada é alterada
+  map.on('draw:edited', function (e) {
+    e.layers.eachLayer(function (layer) {
+        window.parent.postMessage({
+            type: 'parcel_geometry',
+            data: layer.toGeoJSON().geometry
+        }, '*');
+    });
+  });
+
+  window.addEventListener('message', (e) => {
+    if (e.data.type === 'zoom_to_geometry') {
+        const tempLayer = L.geoJSON(geojson);
+        map.fitBounds(tempLayer.getBounds(), {
+            padding: [50, 50],
+            maxZoom: 16,
+            animate: true
+        });
+        
+        // Opcional: faz a parcela selecionada "piscar" ou mudar de cor para destaque
+        tempLayer.setStyle({ color: '#FFD700', weight: 5, fillOpacity: 0.7 }).addTo(map);
+        setTimeout(() => map.removeLayer(tempLayer), 2000);
+    }
+  });
+
+  window.addEventListener('message', (e) => {
+    if (e.data.type === 'load_parcels') loadParcels(e.data.geojson);
+  });
+
+  map.whenReady(() => window.parent.postMessage({type: 'request_parcels'}, '*'));
+
+  // Add this to your existing postMessage listener or create a new one
+window.addEventListener('message', function(event) {
+    if (event.data.type === 'zoom_to_parcel') {
+        const parcelId = event.data.parcelId;
+        
+        // Find the parcel layer
+        parcelsLayer.eachLayer(function(layer) {
+            if (layer.feature.properties.id === parcelId) {
+                // Zoom to the parcel
+                map.fitBounds(layer.getBounds(), {
+                    padding: [50, 50],
+                    maxZoom: 16
+                });
+                
+                // Optional: Open popup
+                layer.openPopup();
+                
+                // Optional: Highlight the parcel temporarily
+                const originalStyle = layer.options.style || {};
+                layer.setStyle({
+                    fillColor: '#ff0000',
+                    fillOpacity: 0.7,
+                    color: '#ff0000',
+                    weight: 3
+                });
+                
+                // Reset style after 2 seconds
+                setTimeout(function() {
+                    layer.setStyle(originalStyle);
+                }, 2000);
+            }
+        });
+    }
+    
+    // Keep your existing 'load_parcels' handler here
+    if (event.data.type === 'load_parcels') {
+        // ... existing code ...
+    }
+});
+</script>
+</body>
+</html>

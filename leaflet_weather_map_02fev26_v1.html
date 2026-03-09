@@ -1,0 +1,304 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Mapa Meteorológico IPMA</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css" />
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"></script>
+    <style>
+        body { margin: 0; padding: 0; }
+        #map { height: 100vh; width: 100%; }
+        
+        .leaflet-control-layers {
+            max-height: 80vh;
+            overflow-y: auto;
+        }
+        
+        .info-box {
+            position: absolute;
+            top: 10px;
+            left: 60px;
+            background: white;
+            padding: 12px 15px;
+            border-radius: 8px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+            z-index: 1000;
+            font-size: 14px;
+            color: #333;
+        }
+        
+        .info-box strong {
+            color: #d9534f;
+        }
+        
+        .legend {
+            position: absolute;
+            bottom: 30px;
+            left: 10px;
+            background: white;
+            padding: 10px;
+            border-radius: 8px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+            z-index: 1000;
+            max-width: 300px;
+        }
+        
+        .legend h4 {
+            margin: 0 0 8px 0;
+            font-size: 13px;
+            color: #333;
+        }
+        
+        .legend-item {
+            display: flex;
+            align-items: center;
+            margin: 5px 0;
+            font-size: 12px;
+        }
+        
+        .legend-color {
+            width: 30px;
+            height: 15px;
+            margin-right: 8px;
+            border: 1px solid #999;
+        }
+    </style>
+</head>
+<body>
+    <div id="map"></div>
+    
+    <div class="info-box">
+        <strong>🔥 Índices FWI - IPMA</strong><br>
+        Sistema Canadiano de Perigo de Incêndio
+    </div>
+    
+    <div class="legend" id="legend">
+        <h4>Legenda - Índices FWI</h4>
+        <div class="legend-item">
+            <strong>FWI:</strong> Fire Weather Index (Índice Geral)
+        </div>
+        <div class="legend-item">
+            <strong>FFMC:</strong> Fine Fuel Moisture Code
+        </div>
+        <div class="legend-item">
+            <strong>DMC:</strong> Duff Moisture Code
+        </div>
+        <div class="legend-item">
+            <strong>DC:</strong> Drought Code
+        </div>
+        <div class="legend-item">
+            <strong>ISI:</strong> Initial Spread Index
+        </div>
+        <div class="legend-item">
+            <strong>BUI:</strong> Buildup Index
+        </div>
+    </div>
+
+    <script>
+        // Inicializar mapa centrado em Portugal Continental
+        const map = L.map('map').setView([39.5, -8.0], 7);
+
+        // ============= MAPAS BASE =============
+        const basemaps = {
+            'OpenStreetMap': L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                attribution: '© OpenStreetMap contributors',
+                maxZoom: 19
+            }),
+            
+            'Topográfico': L.tileLayer('https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png', {
+                attribution: '© OpenTopoMap contributors',
+                maxZoom: 17
+            }),
+            
+            'Satélite (ESRI)': L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+                attribution: '© Esri',
+                maxZoom: 18
+            }),
+            
+            'Terreno': L.tileLayer('https://stamen-tiles-{s}.a.ssl.fastly.net/terrain/{z}/{x}/{y}.jpg', {
+                attribution: '© Stamen Design, © OpenStreetMap contributors',
+                maxZoom: 16,
+                subdomains: 'abcd'
+            })
+        };
+
+        // Adicionar mapa base padrão
+        basemaps['OpenStreetMap'].addTo(map);
+
+        // ============= CAMADAS WMS IPMA =============
+        const ipmaWmsUrl = 'https://mf2.ipma.pt/services?';
+        
+        // Índices FWI (Fire Weather Index) - LSA SAF
+        const fwiIndexes = {
+            'FWI - Índice Geral': L.tileLayer.wms(ipmaWmsUrl, {
+                layers: 'lsasaf.fwi.continent',
+                format: 'image/png',
+                transparent: true,
+                opacity: 0.7,
+                attribution: '© IPMA / LSA SAF'
+            }),
+
+            'FFMC - Combustível Fino': L.tileLayer.wms(ipmaWmsUrl, {
+                layers: 'lsasaf.ffmc.continent',
+                format: 'image/png',
+                transparent: true,
+                opacity: 0.7,
+                attribution: '© IPMA / LSA SAF'
+            }),
+
+            'DMC - Camada Orgânica': L.tileLayer.wms(ipmaWmsUrl, {
+                layers: 'lsasaf.dmc.continent',
+                format: 'image/png',
+                transparent: true,
+                opacity: 0.7,
+                attribution: '© IPMA / LSA SAF'
+            }),
+
+            'DC - Seca Profunda': L.tileLayer.wms(ipmaWmsUrl, {
+                layers: 'lsasaf.dc.continent',
+                format: 'image/png',
+                transparent: true,
+                opacity: 0.7,
+                attribution: '© IPMA / LSA SAF'
+            }),
+
+            'ISI - Propagação Inicial': L.tileLayer.wms(ipmaWmsUrl, {
+                layers: 'lsasaf.isi.continent',
+                format: 'image/png',
+                transparent: true,
+                opacity: 0.7,
+                attribution: '© IPMA / LSA SAF'
+            }),
+
+            'BUI - Acumulação': L.tileLayer.wms(ipmaWmsUrl, {
+                layers: 'lsasaf.bui.continent',
+                format: 'image/png',
+                transparent: true,
+                opacity: 0.7,
+                attribution: '© IPMA / LSA SAF'
+            })
+        };
+
+        // Outras camadas meteorológicas IPMA
+        const weatherLayers = {
+            'Temperatura Máxima': L.tileLayer.wms(ipmaWmsUrl, {
+                layers: 'tmax_d0',
+                format: 'image/png',
+                transparent: true,
+                opacity: 0.7,
+                attribution: '© IPMA'
+            }),
+            
+            'Temperatura Mínima': L.tileLayer.wms(ipmaWmsUrl, {
+                layers: 'tmin_d0',
+                format: 'image/png',
+                transparent: true,
+                opacity: 0.7,
+                attribution: '© IPMA'
+            }),
+            
+            'Precipitação': L.tileLayer.wms(ipmaWmsUrl, {
+                layers: 'precip_d0',
+                format: 'image/png',
+                transparent: true,
+                opacity: 0.7,
+                attribution: '© IPMA'
+            }),
+            
+            'Vento (Rajada)': L.tileLayer.wms(ipmaWmsUrl, {
+                layers: 'ffg_d0',
+                format: 'image/png',
+                transparent: true,
+                opacity: 0.7,
+                attribution: '© IPMA'
+            }),
+            
+            'Radar Meteorológico': L.tileLayer.wms(ipmaWmsUrl, {
+                layers: 'radar',
+                format: 'image/png',
+                transparent: true,
+                opacity: 0.7,
+                attribution: '© IPMA'
+            })
+        };
+
+        // Risco de Incêndio
+        const fireRiskLayers = {
+            'Risco de Incêndio': L.tileLayer.wms(ipmaWmsUrl, {
+                layers: 'risco_incendio',
+                format: 'image/png',
+                transparent: true,
+                opacity: 0.8,
+                attribution: '© IPMA'
+            })
+        };
+
+        // ============= CONTROLE DE CAMADAS =============
+        const overlays = {
+            '<strong style="color:#d9534f;">🔥 Índices FWI (Risco Incêndio)</strong>': {
+                ...fwiIndexes
+            },
+            '<strong style="color:#0275d8;">🌡️ Meteorologia</strong>': {
+                ...weatherLayers
+            },
+            '<strong style="color:#f0ad4e;">⚠️ Alertas</strong>': {
+                ...fireRiskLayers
+            }
+        };
+
+        // Criar controle de camadas agrupado
+        const layerControl = L.control.layers(basemaps, {
+            ...fwiIndexes,
+            ...weatherLayers,
+            ...fireRiskLayers
+        }, {
+            collapsed: false,
+            position: 'topright'
+        }).addTo(map);
+
+        // ============= MARCADORES DE REFERÊNCIA =============
+        // Algarve
+        L.marker([37.2555, -8.3965], {
+            title: 'Algarve'
+        }).addTo(map)
+            .bindPopup('<b>🔥 Algarve</b><br>Região de Fogo Controlado');
+
+        // Monchique (zona de alto risco)
+        L.marker([37.3167, -8.5833], {
+            title: 'Monchique'
+        }).addTo(map)
+            .bindPopup('<b>⚠️ Monchique</b><br>Zona de Risco Elevado');
+
+        // ============= CONTROLES ADICIONAIS =============
+        // Escala
+        L.control.scale({
+            imperial: false,
+            metric: true,
+            position: 'bottomright'
+        }).addTo(map);
+
+        // ============= ATUALIZAÇÃO AUTOMÁTICA =============
+        // Atualizar camadas a cada 10 minutos
+        setInterval(() => {
+            map.eachLayer(layer => {
+                if (layer.wmsParams) {
+                    // Força reload das camadas WMS
+                    layer.setParams({}, true);
+                }
+            });
+            console.log('Camadas WMS atualizadas:', new Date().toLocaleString('pt-PT'));
+        }, 600000); // 10 minutos
+
+        // ============= INFO DE DEBUG =============
+        map.on('click', function(e) {
+            console.log('Coordenadas:', e.latlng.lat.toFixed(4), e.latlng.lng.toFixed(4));
+        });
+
+        // Log inicial
+        console.log('Mapa IPMA inicializado');
+        console.log('Centro:', map.getCenter());
+        console.log('Zoom:', map.getZoom());
+    </script>
+</body>
+</html>

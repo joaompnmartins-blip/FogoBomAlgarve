@@ -1,0 +1,284 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8"/>
+  <title>Editar Parcelas - Algarve</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.css"/>
+  <style>
+    body { margin: 0; padding: 0; }
+    #map { height: 500px; width: 100%; }
+    /* Estilo da Legenda */
+    .legend { 
+        background: white; 
+        padding: 10px; 
+        border-radius: 8px; 
+        box-shadow: 0 1px 5px rgba(0,0,0,0.4); 
+        line-height: 18px; 
+        color: #333; 
+        font-family: Arial, sans-serif; 
+    }
+    .legend h4 { margin: 0 0 8px 0; font-size: 14px; border-bottom: 1px solid #ddd; padding-bottom: 4px; }
+    .legend-item { display: flex; align-items: center; margin-bottom: 4px; font-size: 12px; }
+    .legend-color { width: 16px; height: 16px; margin-right: 8px; border: 1px solid #666; opacity: 0.8; }
+    
+    /* Highlight style for selected parcel */
+    .selected-parcel {
+      animation: pulse 1s ease-in-out;
+    }
+    
+    @keyframes pulse {
+      0% { opacity: 0.4; }
+      50% { opacity: 0.9; }
+      100% { opacity: 0.4; }
+    }
+  </style>
+</head>
+<body>
+<div id="map"></div>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.js"></script>
+<script>
+  // --- Mapas Base ---
+  const googleSat = L.tileLayer('http://{s}.google.com/vt/lyrs=s&x={x}&y={y}&z={z}', {
+    maxZoom: 20, subdomains:['mt0','mt1','mt2','mt3'], attribution: '© Google Maps'
+  });
+  
+  const osm = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    attribution: '© OpenStreetMap contributors'
+  });
+
+  const map = L.map('map', { 
+    center: [37.2555, -8.3965], 
+    zoom: 10, 
+    layers: [googleSat] 
+  });
+
+  // Controlo de Camadas (Base Maps)
+  const baseMaps = {
+    "Satélite (Google)": googleSat,
+    "OpenStreetMap": osm
+  };
+  L.control.layers(baseMaps).addTo(map);
+
+  // Layer for the parcel being EDITED
+  const drawnItems = new L.FeatureGroup().addTo(map);
+  
+  // Layer for ALL parcels (clickable to edit)
+  let parcelsLayer = new L.FeatureGroup().addTo(map);
+  
+  // Track currently selected parcel ID
+  let selectedParcelId = null;
+
+  // Barra de Desenho - for EDITING selected parcel
+  const drawControl = new L.Control.Draw({
+    edit: { 
+      featureGroup: drawnItems,
+      edit: true,
+      remove: true
+    },
+    draw: { 
+      polygon: true, 
+      polyline: false, 
+      rectangle: true, 
+      circle: false, 
+      marker: false, 
+      circlemarker: false 
+    }
+  });
+  map.addControl(drawControl);
+
+  // Função de Cores por Proprietário
+  function getOwnerColor(info) { 
+    return (info === 'Sim' || info === 'yes') ? '#2e7d32' : '#c62828'; 
+  }
+
+  // --- Legenda ---
+  const legend = L.control({ position: 'bottomright' });
+  legend.onAdd = function() {
+    const div = L.DomUtil.create('div', 'legend');
+    div.innerHTML = `
+      <h4>Proprietário Info</h4>
+      <div class="legend-item"><div class="legend-color" style="background:#2e7d32"></div> Sim / Identificado</div>
+      <div class="legend-item"><div class="legend-color" style="background:#c62828"></div> Não / S. Info</div>
+      <div class="legend-item" style="margin-top: 8px; font-style: italic; color: #666;">
+        💡 Clique numa parcela para editar
+      </div>
+    `;
+    return div;
+  };
+  legend.addTo(map);
+
+  // Função para carregar todas as parcelas
+  function loadParcels(geojson) {
+    // Clear existing parcels
+    if (parcelsLayer) { 
+      map.removeLayer(parcelsLayer); 
+    }
+    
+    parcelsLayer = L.geoJSON(geojson, {
+      style: (f) => ({
+        color: getOwnerColor(f.properties.tem_proprietario),
+        weight: 2, 
+        fillOpacity: 0.3,
+        fillColor: getOwnerColor(f.properties.tem_proprietario)
+      }),
+      onEachFeature: (f, l) => {
+        const props = f.properties;
+        const popupContent = `
+          <div style="font-family: Arial; min-width: 150px;">
+            <b style="font-size: 14px; color: #333;">${props.name || 'Sem Nome'}</b><br>
+            <hr style="margin: 5px 0;">
+            <b>🌲 Vegetação:</b> ${props.vegetation_type}<br>
+            <b>🗝️ Infraestrutura:</b> ${props.infraestrutura}<br>
+            <b>👤 Responsável:</b> ${props.responsavel || 'N/A'}<br>
+            <b>🏡 Info Proprietário:</b> ${props.tem_proprietario === 'yes' || props.tem_proprietario === 'Sim' ? 'Sim' : 'Não'}
+            <hr style="margin: 5px 0;">
+            <i style="font-size: 11px; color: #666;">Clique para editar esta parcela</i>
+          </div>
+        `;
+        l.bindPopup(popupContent);
+        
+        // Click to make parcel editable
+        l.on('click', function() {
+          makeParcelEditable(f, l);
+        });
+      }
+    }).addTo(map);
+    
+    // Zoom to show all parcels
+    if (geojson.features && geojson.features.length > 0) {
+      map.fitBounds(parcelsLayer.getBounds());
+    }
+  }
+
+  // Make a parcel editable when clicked
+  function makeParcelEditable(feature, layer) {
+    // Clear previous editable parcel
+    drawnItems.clearLayers();
+    
+    // Add clicked parcel to editable layer
+    const editLayer = L.geoJSON(feature).getLayers()[0];
+    drawnItems.addLayer(editLayer);
+    
+    // Store the selected parcel ID
+    selectedParcelId = feature.properties.id;
+    
+    // Send geometry to parent (Gradio)
+    window.parent.postMessage({
+      type: 'parcel_geometry',
+      data: editLayer.toGeoJSON().geometry
+    }, '*');
+    
+    // Optionally notify parent that a parcel was clicked
+    window.parent.postMessage({
+      type: 'parcel_clicked',
+      parcelId: feature.properties.id
+    }, '*');
+  }
+
+  // Zoom to a specific parcel by ID
+  function zoomToParcel(parcelId) {
+    let found = false;
+    
+    parcelsLayer.eachLayer(function(layer) {
+      if (layer.feature && layer.feature.properties.id === parcelId) {
+        found = true;
+        
+        // Zoom to the parcel
+        map.fitBounds(layer.getBounds(), {
+          padding: [50, 50],
+          maxZoom: 16,
+          animate: true,
+          duration: 0.5
+        });
+        
+        // Open popup
+        layer.openPopup();
+        
+        // Highlight the parcel temporarily
+        const originalStyle = {
+          color: getOwnerColor(layer.feature.properties.tem_proprietario),
+          weight: 2,
+          fillOpacity: 0.3,
+          fillColor: getOwnerColor(layer.feature.properties.tem_proprietario)
+        };
+        
+        // Apply highlight style
+        layer.setStyle({
+          fillColor: '#FFD700',
+          fillOpacity: 0.7,
+          color: '#FF8C00',
+          weight: 4
+        });
+        
+        // Reset style after 2 seconds
+        setTimeout(function() {
+          layer.setStyle(originalStyle);
+        }, 2000);
+        
+        // Make it editable automatically
+        makeParcelEditable(layer.feature, layer);
+      }
+    });
+    
+    if (!found) {
+      console.warn('Parcel with ID ' + parcelId + ' not found');
+    }
+  }
+
+  // --- Eventos para edição da geometria ---
+  map.on('draw:created', (e) => {
+    const layer = e.layer;
+    drawnItems.clearLayers();
+    drawnItems.addLayer(layer);
+    window.parent.postMessage({ 
+      type: 'parcel_geometry', 
+      data: layer.toGeoJSON().geometry 
+    }, '*');
+  });
+
+  map.on('draw:edited', function (e) {
+    e.layers.eachLayer(function (layer) {
+      window.parent.postMessage({
+        type: 'parcel_geometry',
+        data: layer.toGeoJSON().geometry
+      }, '*');
+    });
+  });
+
+  map.on('draw:deleted', function (e) {
+    window.parent.postMessage({
+      type: 'parcel_geometry',
+      data: null
+    }, '*');
+  });
+
+  // Receber mensagens do Gradio
+  window.addEventListener('message', (e) => {
+    if (e.data.type === 'load_parcels') {
+      loadParcels(e.data.geojson);
+    }
+    
+    if (e.data.type === 'zoom_to_parcel') {
+      zoomToParcel(e.data.parcelId);
+    }
+    
+    if (e.data.type === 'load_parcel_geometry') {
+      // Load specific geometry into edit mode
+      drawnItems.clearLayers();
+      const geojson = e.data.geometry;
+      if (geojson) {
+        const layer = L.geoJSON(geojson).getLayers()[0];
+        drawnItems.addLayer(layer);
+      }
+    }
+  });
+
+  // Request initial parcel data when map is ready
+  map.whenReady(() => {
+    window.parent.postMessage({type: 'request_parcels'}, '*');
+  });
+</script>
+</body>
+</html>

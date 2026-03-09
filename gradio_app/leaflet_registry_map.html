@@ -1,0 +1,684 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8"/>
+  <title>Registo de Parcelas - Algarve (com Import GeoJSON/KML)</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.css"/>
+  <!-- Omnivore for KML support -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet-omnivore/0.3.4/leaflet-omnivore.min.js"></script>
+  <style>
+    body { margin: 0; padding: 0; }
+    #map { height: 500px; width: 100%; }
+    
+    /* Import Panel */
+    .import-panel {
+      position: absolute;
+      top: 10px;
+      right: 60px;
+      background: white;
+      padding: 20px;
+      border-radius: 10px;
+      box-shadow: 0 4px 15px rgba(0,0,0,0.3);
+      z-index: 1000;
+      max-width: 350px;
+      font-family: Arial, sans-serif;
+    }
+    
+    .import-panel h3 {
+      margin: 0 0 15px 0;
+      font-size: 18px;
+      color: #333;
+      border-bottom: 3px solid #ea580c;
+      padding-bottom: 8px;
+    }
+    
+    .import-toggle {
+      position: absolute;
+      bottom: 10px;
+      left: 10px;
+      /* Grayscale gradient */
+      background: linear-gradient(135deg, #71717a 0%, #3f3f46 100%);
+      color: white;
+      border: none;
+      padding: 12px 16px;
+      border-radius: 8px;
+      cursor: pointer;
+      font-weight: 600;
+      z-index: 1000;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+      font-size: 14px;
+      transition: all 0.3s ease;
+    }
+
+    .import-toggle:hover {
+      background: linear-gradient(135deg, #3f3f46 0%, #18181b 100%);
+      transform: translateY(-2px);
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+    }
+    
+    .file-input-wrapper {
+      position: relative;
+      overflow: hidden;
+      display: inline-block;
+      width: 100%;
+      margin: 10px 0;
+    }
+    
+    .file-input-wrapper input[type=file] {
+      position: absolute;
+      left: -9999px;
+    }
+    
+    .file-input-label {
+      display: block;
+      padding: 12px;
+      background: #f5f5f4;
+      border: 2px dashed #d4d4d8;
+      border-radius: 8px;
+      text-align: center;
+      cursor: pointer;
+      transition: all 0.3s;
+      color: #52525b;
+      font-size: 14px;
+    }
+    
+    .file-input-label:hover {
+      background: #fef3c7;
+      border-color: #fb923c;
+      color: #92400e;
+    }
+    
+    .selected-file {
+      background: #dcfce7;
+      color: #166534;
+      font-size: 12px;
+      padding: 8px;
+      margin: 8px 0;
+      border-radius: 6px;
+      border: 1px solid #86efac;
+    }
+    
+    .import-btn {
+      background: linear-gradient(135deg, #a09e9c 0%, #413f3f 100%);
+      color: white;
+      border: none;
+      padding: 12px 20px;
+      border-radius: 8px;
+      cursor: pointer;
+      font-weight: 600;
+      width: 100%;
+      margin-top: 10px;
+      font-size: 15px;
+      transition: background 0.3s ease;
+    }
+
+    .import-btn:hover {
+      background: linear-gradient(135deg, #504f4e 0%, #2e2927 100%);
+    }
+
+    .import-btn:disabled {
+      background: #d4d4d8;
+      cursor: not-allowed;
+    }
+    
+    .info-text {
+      font-size: 12px;
+      color: #71717a;
+      margin: 8px 0;
+      line-height: 1.4;
+    }
+    
+    .success-message {
+      background: #dcfce7;
+      color: #166534;
+      padding: 10px;
+      border-radius: 6px;
+      margin-top: 10px;
+      font-size: 13px;
+      border: 1px solid #86efac;
+    }
+    
+    .error-message {
+      background: #fee2e2;
+      color: #991b1b;
+      padding: 10px;
+      border-radius: 6px;
+      margin-top: 10px;
+      font-size: 13px;
+      border: 1px solid #fca5a5;
+    }
+    
+    /* Estilo da Legenda */
+    .legend { 
+      background: white; 
+      padding: 10px; 
+      border-radius: 8px; 
+      box-shadow: 0 1px 5px rgba(0,0,0,0.4); 
+      line-height: 18px; 
+      color: #333; 
+      font-family: Arial, sans-serif; 
+    }
+    .legend h4 { margin: 0 0 8px 0; font-size: 14px; border-bottom: 1px solid #ddd; padding-bottom: 4px; }
+    .legend-item { display: flex; align-items: center; margin-bottom: 4px; font-size: 12px; }
+    .legend-color { width: 16px; height: 16px; margin-right: 8px; border: 1px solid #666; opacity: 0.8; }
+  </style>
+</head>
+<body>
+<div id="map"></div>
+
+<!-- Import Toggle Button -->
+<button class="import-toggle" onclick="toggleImportPanel()">
+  📥 Importar GeoJSON/KML
+</button>
+
+<!-- Import Panel (hidden by default) -->
+<div id="importPanel" class="import-panel" style="display: none;">
+  <h3>📥 Importar Parcelas</h3>
+  
+  <div class="info-text">
+    Carregue ficheiros GeoJSON (.geojson, .json) ou KML (.kml) para importar parcelas para o mapa. IMPORTANTE os ficheiros a importar devem estar no sistema de coordenadas WGS84 (EPSG:4326)
+  </div>
+  
+  <div class="file-input-wrapper">
+    <input type="file" id="fileInput" accept=".geojson,.json,.kml,.kmz" onchange="handleFileSelect(event)">
+    <label for="fileInput" class="file-input-label">
+      📁 Clique para selecionar ficheiro<br>
+      <small>GeoJSON, JSON, KML ou KMZ</small>
+    </label>
+  </div>
+  
+  <div id="selectedFileName"></div>
+  
+  <button id="importBtn" class="import-btn" onclick="importFile()" disabled>
+    ⬆️ Importar Parcelas
+  </button>
+  
+  <div id="statusMessage"></div>
+  
+  <div class="info-text" style="margin-top: 15px; padding-top: 15px; border-top: 1px solid #e5e5e5;">
+    <strong>Nota:</strong> Ao importar, a parcela ficará pronta para desenho. Preencha os dados do formulário (nome, responsável, etc.) e clique em "Guardar" para registar na base de dados.
+  </div>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.js"></script>
+<script>
+  let selectedFile = null;
+  let importedLayers = [];
+
+  // --- Mapas Base ---
+  const googleSat = L.tileLayer('http://{s}.google.com/vt/lyrs=s&x={x}&y={y}&z={z}', {
+    maxZoom: 20, subdomains:['mt0','mt1','mt2','mt3'], attribution: '© Google Maps'
+  });
+  
+  const osm = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    attribution: '© OpenStreetMap contributors'
+  });
+
+  const map = L.map('map', { 
+    center: [37.2555, -8.3965], 
+    zoom: 10, 
+    layers: [googleSat] 
+  });
+
+  // Controlo de Camadas (Base Maps)
+  const baseMaps = {
+    "Satélite (Google)": googleSat,
+    "OpenStreetMap": osm
+  };
+  L.control.layers(baseMaps).addTo(map);
+
+  // Layer for NEW parcel being drawn (editable)
+  const drawnItems = new L.FeatureGroup().addTo(map);
+  
+  // Layer for EXISTING parcels (view-only)
+  let parcelsLayer = new L.FeatureGroup().addTo(map);
+  let parcelsFirstLoad = true;  // Only auto-fit bounds on first load
+  
+  // Layer for IMPORTED parcels
+  let importedLayer = new L.FeatureGroup().addTo(map);
+
+  // Barra de Desenho - ONLY for NEW parcels
+  const drawControl = new L.Control.Draw({
+    edit: { 
+      featureGroup: drawnItems,
+      edit: true,
+      remove: true
+    },
+    draw: { 
+      polygon: true, 
+      polyline: false, 
+      rectangle: true, 
+      circle: false, 
+      marker: false, 
+      circlemarker: false 
+    }
+  });
+  map.addControl(drawControl);
+
+  // Função de Cores por Proprietário
+  function getOwnerColor(info) { 
+    return (info === 'Sim' || info === 'yes') ? '#2e7d32' : '#c62828'; 
+  }
+
+  // --- Legenda ---
+  const legend = L.control({ position: 'bottomright' });
+  legend.onAdd = function() {
+    const div = L.DomUtil.create('div', 'legend');
+    div.innerHTML = `
+      <h4>Proprietário Info</h4>
+      <div class="legend-item"><div class="legend-color" style="background:#2e7d32"></div> Sim / Identificado</div>
+      <div class="legend-item"><div class="legend-color" style="background:#c62828"></div> Não / S. Info</div>
+    `;
+    return div;
+  };
+  legend.addTo(map);
+
+  // Toggle Import Panel
+  function toggleImportPanel() {
+    const panel = document.getElementById('importPanel');
+    panel.style.display = panel.style.display === 'none' ? 'block' : 'none';
+  }
+
+  // Handle file selection
+  function handleFileSelect(event) {
+    const file = event.target.files[0];
+    if (!file) return;
+    
+    selectedFile = file;
+    const fileNameDiv = document.getElementById('selectedFileName');
+    fileNameDiv.innerHTML = `<div class="selected-file">✓ ${file.name} (${formatFileSize(file.size)})</div>`;
+    
+    document.getElementById('importBtn').disabled = false;
+    document.getElementById('statusMessage').innerHTML = '';
+  }
+
+  // Import file
+  function importFile() {
+    if (!selectedFile) return;
+    
+    const reader = new FileReader();
+    const fileName = selectedFile.name.toLowerCase();
+    
+    reader.onload = function(e) {
+      try {
+        let geojson;
+        
+        if (fileName.endsWith('.kml') || fileName.endsWith('.kmz')) {
+          // Parse KML
+          parseKML(e.target.result);
+        } else if (fileName.endsWith('.geojson') || fileName.endsWith('.json')) {
+          // Parse GeoJSON
+          geojson = JSON.parse(e.target.result);
+          addGeoJSONToMap(geojson);
+        } else {
+          showError('Formato de ficheiro não suportado');
+        }
+      } catch (error) {
+        showError('Erro ao processar ficheiro: ' + error.message);
+      }
+    };
+    
+    if (fileName.endsWith('.kml') || fileName.endsWith('.kmz')) {
+      reader.readAsText(selectedFile);
+    } else {
+      reader.readAsText(selectedFile);
+    }
+  }
+
+  // Parse KML and convert to GeoJSON
+  function parseKML(kmlText) {
+    try {
+      const parser = new DOMParser();
+      const kmlDoc = parser.parseFromString(kmlText, 'text/xml');
+      
+      // Use Leaflet Omnivore if available, otherwise manual parsing
+      if (typeof omnivore !== 'undefined') {
+        const kmlLayer = omnivore.kml.parse(kmlText);
+        const geojson = kmlLayer.toGeoJSON();
+        addGeoJSONToMap(geojson);
+      } else {
+        // Fallback: Create a temporary layer
+        const blob = new Blob([kmlText], { type: 'application/vnd.google-earth.kml+xml' });
+        const url = URL.createObjectURL(blob);
+        
+        fetch(url)
+          .then(response => response.text())
+          .then(text => {
+            // Simple KML to GeoJSON conversion
+            const features = parseKMLPlacemarks(kmlDoc);
+            addGeoJSONToMap({ type: 'FeatureCollection', features: features });
+          });
+      }
+    } catch (error) {
+      showError('Erro ao processar KML: ' + error.message);
+    }
+  }
+
+  // Simple KML placemark parser
+  function parseKMLPlacemarks(kmlDoc) {
+    const features = [];
+    const placemarks = kmlDoc.getElementsByTagName('Placemark');
+    
+    for (let i = 0; i < placemarks.length; i++) {
+      const placemark = placemarks[i];
+      const name = placemark.getElementsByTagName('name')[0]?.textContent || `Imported ${i+1}`;
+      const coordinates = placemark.getElementsByTagName('coordinates')[0]?.textContent;
+      
+      if (coordinates) {
+        const coords = parseKMLCoordinates(coordinates);
+        if (coords.length > 0) {
+          features.push({
+            type: 'Feature',
+            properties: { name: name, imported: true },
+            geometry: {
+              type: coords.length > 1 ? 'Polygon' : 'Point',
+              coordinates: coords.length > 1 ? [coords] : coords[0]
+            }
+          });
+        }
+      }
+    }
+    
+    return features;
+  }
+
+  // Parse KML coordinates
+  function parseKMLCoordinates(coordString) {
+    const coords = coordString.trim().split(/\s+/);
+    return coords.map(coord => {
+      const parts = coord.split(',');
+      return [parseFloat(parts[0]), parseFloat(parts[1])];
+    });
+  }
+
+  // Add GeoJSON to map
+  function addGeoJSONToMap(geojson) {
+    try {
+      let featureCount = 0;
+      
+      // Process each feature and add to drawnItems (editable layer)
+      if (geojson.type === 'FeatureCollection') {
+        geojson.features.forEach(feature => {
+          addFeatureAsDrawnParcel(feature);
+          featureCount++;
+        });
+      } else if (geojson.type === 'Feature') {
+        addFeatureAsDrawnParcel(geojson);
+        featureCount = 1;
+      }
+      
+      showSuccess(`✓ ${featureCount} parcela(s) importada(s) com sucesso! Pode agora preencher os dados e guardar.`);
+      
+      // Close the import panel after 2 seconds
+      setTimeout(() => {
+        toggleImportPanel();
+      }, 2000);
+      
+      // Send to parent
+      window.parent.postMessage({
+        type: 'imported_parcels',
+        geojson: geojson,
+        count: featureCount
+      }, '*');
+      
+    } catch (error) {
+      showError('Erro ao adicionar ao mapa: ' + error.message);
+    }
+  }
+
+  // Add a single feature as a drawn parcel
+  function addFeatureAsDrawnParcel(feature) {
+    let geometry = feature.geometry;
+    let layer;
+    
+    // Convert MultiPolygon to Polygon (take the largest polygon)
+    if (geometry.type === 'MultiPolygon') {
+      console.log('Converting MultiPolygon to Polygon...');
+      const polygons = geometry.coordinates;
+      
+      // Find the largest polygon by area
+      let largestPolygon = polygons[0];
+      let maxArea = calculatePolygonArea(polygons[0][0]);
+      
+      for (let i = 1; i < polygons.length; i++) {
+        const area = calculatePolygonArea(polygons[i][0]);
+        if (area > maxArea) {
+          maxArea = area;
+          largestPolygon = polygons[i];
+        }
+      }
+      
+      // Convert to single Polygon
+      geometry = {
+        type: 'Polygon',
+        coordinates: largestPolygon
+      };
+    }
+    
+    // Convert geometry to Leaflet layer
+    if (geometry.type === 'Polygon') {
+      const coords = geometry.coordinates[0].map(coord => [coord[1], coord[0]]); // Swap lon/lat to lat/lon
+      layer = L.polygon(coords, {
+        color: '#3b82f6',
+        weight: 3,
+        fillOpacity: 0.3,
+        fillColor: '#3b82f6'
+      });
+    } else if (geometry.type === 'Point') {
+      const coords = [geometry.coordinates[1], geometry.coordinates[0]];
+      layer = L.marker(coords);
+    } else if (geometry.type === 'LineString') {
+      const coords = geometry.coordinates.map(coord => [coord[1], coord[0]]);
+      layer = L.polyline(coords);
+    }
+    
+    if (layer) {
+      // Clear previous drawn items and add this one
+      drawnItems.clearLayers();
+      drawnItems.addLayer(layer);
+      
+      // Send geometry to parent (Gradio) immediately
+      sendParcelData(geometry);
+      
+      // NO popup - clean parcel without labels
+      
+      // Zoom to the imported parcel
+      if (layer.getBounds) {
+        map.fitBounds(layer.getBounds());
+      } else if (layer.getLatLng) {
+        map.setView(layer.getLatLng(), 15);
+      }
+    }
+  }
+
+  // Calculate polygon area (simple approximation for finding largest polygon)
+  function calculatePolygonArea(coordinates) {
+    let area = 0;
+    const n = coordinates.length;
+    
+    for (let i = 0; i < n - 1; i++) {
+      const x1 = coordinates[i][0];
+      const y1 = coordinates[i][1];
+      const x2 = coordinates[i + 1][0];
+      const y2 = coordinates[i + 1][1];
+      area += (x1 * y2) - (x2 * y1);
+    }
+    
+    return Math.abs(area / 2);
+  }
+
+  // Show success message
+  function showSuccess(message) {
+    document.getElementById('statusMessage').innerHTML = 
+      `<div class="success-message">${message}</div>`;
+  }
+
+  // Show error message
+  function showError(message) {
+    document.getElementById('statusMessage').innerHTML = 
+      `<div class="error-message">${message}</div>`;
+  }
+
+  // Format file size
+  function formatFileSize(bytes) {
+    if (bytes < 1024) return bytes + ' B';
+    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+    return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+  }
+
+  // Função para carregar as parcelas EXISTENTES
+  function loadParcels(geojson) {
+    if (parcelsLayer) { 
+      map.removeLayer(parcelsLayer); 
+    }
+    
+    parcelsLayer = L.geoJSON(geojson, {
+      style: (f) => ({
+        color: getOwnerColor(f.properties.tem_proprietario),
+        weight: 2, 
+        fillOpacity: 0.3,
+        fillColor: getOwnerColor(f.properties.tem_proprietario)
+      }),
+      onEachFeature: (f, l) => {
+        const props = f.properties;
+        const popupContent = `
+          <div style="font-family: Arial; min-width: 150px;">
+            <b style="font-size: 14px; color: #333;">${props.name || 'Sem Nome'}</b><br>
+            <hr style="margin: 5px 0;">
+            <b>🌲 Vegetação:</b> ${props.vegetation_type}<br>
+            <b>🏗️ Infraestrutura:</b> ${props.infraestrutura}<br>
+            <b>👤 Responsável:</b> ${props.responsavel || 'N/A'}<br>
+            <b>🏡 Info Proprietário:</b> ${props.tem_proprietario === 'yes' || props.tem_proprietario === 'Sim' ? 'Sim' : 'Não'}
+          </div>
+        `;
+        l.bindPopup(popupContent);
+      }
+    }).addTo(map);
+    
+    if (geojson.features && geojson.features.length > 0 && parcelsFirstLoad) {
+      map.fitBounds(parcelsLayer.getBounds(), { padding: [30, 30] });
+      parcelsFirstLoad = false;
+    }
+  }
+
+  // --- Area calculation (Shoelace with WGS84 -> metres correction) ---
+  function calcAreaHa(geometry) {
+    if (!geometry || geometry.type !== 'Polygon') return null;
+    const coords = geometry.coordinates[0];
+    const toRad = d => d * Math.PI / 180;
+    const R = 6371000; // Earth radius in metres
+    let area = 0;
+    const n = coords.length;
+    for (let i = 0; i < n - 1; i++) {
+      const lon1 = toRad(coords[i][0]),   lat1 = toRad(coords[i][1]);
+      const lon2 = toRad(coords[i+1][0]), lat2 = toRad(coords[i+1][1]);
+      area += (lon2 - lon1) * (2 + Math.sin(lat1) + Math.sin(lat2));
+    }
+    const areaM2 = Math.abs(area) * R * R / 2;
+    return Math.round(areaM2 / 10000 * 100) / 100; // hectares, 2 d.p.
+  }
+
+  // Reverse-geocode centroid via Nominatim -> return Algarve concelho name
+  const ALGARVE_CONCELHOS = [
+    "Albufeira","Alcoutim","Aljezur","Castro Marim","Faro",
+    "Lagoa","Lagos","Loulé","Monchique","Olhão",
+    "Portimão","São Brás de Alportel","Silves","Tavira",
+    "Vila do Bispo","Vila Real de Santo António"
+  ];
+
+  function normalizeName(s) {
+    return s.toLowerCase()
+      .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+      .replace(/\s+/g, ' ').trim();
+  }
+
+  function getCentroid(geometry) {
+    if (!geometry || geometry.type !== 'Polygon') return null;
+    const coords = geometry.coordinates[0];
+    let lat = 0, lon = 0;
+    const n = coords.length - 1; // last == first
+    for (let i = 0; i < n; i++) { lon += coords[i][0]; lat += coords[i][1]; }
+    return { lat: lat / n, lon: lon / n };
+  }
+
+  function lookupConcelho(geometry, callback) {
+    const c = getCentroid(geometry);
+    if (!c) { callback(null); return; }
+    const url = `https://nominatim.openstreetmap.org/reverse?format=json&lat=${c.lat}&lon=${c.lon}&zoom=14&addressdetails=1`;
+    fetch(url, { headers: { 'Accept-Language': 'pt' } })
+      .then(r => r.json())
+      .then(data => {
+        const addr = data.address || {};
+        const raw = addr.municipality || addr.city || addr.town || addr.village || '';
+        const normRaw = normalizeName(raw);
+        const match = ALGARVE_CONCELHOS.find(c => normalizeName(c) === normRaw);
+        console.log("Nominatim raw:", raw, "| matched:", match);
+        callback(match || null);
+      })
+      .catch(() => callback(null));
+  }
+
+  function sendParcelData(geometry) {
+    const area_ha = calcAreaHa(geometry);
+    lookupConcelho(geometry, function(concelho) {
+      window.parent.postMessage({
+        type: 'parcel_geometry',
+        data: geometry,
+        area_ha: area_ha,
+        concelho: concelho
+      }, '*');
+    });
+  }
+
+  // --- Eventos para NOVA parcela ---
+  map.on('draw:created', (e) => {
+    const layer = e.layer;
+    drawnItems.clearLayers();
+    drawnItems.addLayer(layer);
+    sendParcelData(layer.toGeoJSON().geometry);
+  });
+
+  map.on('draw:edited', function (e) {
+    e.layers.eachLayer(function (layer) {
+      sendParcelData(layer.toGeoJSON().geometry);
+    });
+  });
+
+  map.on('draw:deleted', function (e) {
+    window.parent.postMessage({
+      type: 'parcel_geometry',
+      data: null,
+      area_ha: null,
+      concelho: null
+    }, '*');
+  });
+
+  // Receber mensagens do Gradio
+  window.addEventListener('message', (e) => {
+    if (e.data.type === 'load_parcels') {
+      loadParcels(e.data.geojson);
+    }
+    // Clear any drawn items (unsaved parcels)
+    if (e.data.type === 'clear_drawn_items') {
+      drawnItems.clearLayers();
+      console.log('Drawn items cleared');
+    }
+    
+    // Reset view to show all parcels
+    if (e.data.type === 'reset_view') {
+      if (parcelsLayer && parcelsLayer.getLayers().length > 0) {
+        map.fitBounds(parcelsLayer.getBounds(), { padding: [50, 50] });
+        console.log('View reset to show all parcels');
+      }
+    }
+  });
+
+  // Request initial parcel data when map is ready
+  map.whenReady(() => {
+    window.parent.postMessage({type: 'request_parcels'}, '*');
+  });
+</script>
+</body>
+</html>

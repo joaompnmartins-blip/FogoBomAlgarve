@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8"/>
+  <title>Leaflet Map - Fire Management</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.css"/>
+
+  <style>
+    body { margin: 0; padding: 0; }
+    #map { height: 500px; width: 100%; background: #f8f9fa; }
+    
+    .parcel-popup { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; min-width: 150px; }
+    .parcel-popup h3 { margin: 0 0 8px 0; color: #d32f2f; font-size: 16px; border-bottom: 1px solid #ccc; padding-bottom: 5px; }
+    .parcel-popup p { margin: 4px 0; font-size: 13px; color: #333; }
+    
+    .legend {
+      background: white;
+      padding: 10px;
+      border-radius: 8px;
+      box-shadow: 0 1px 5px rgba(0,0,0,0.4);
+      line-height: 18px;
+      color: #555;
+    }
+    .legend h4 { margin: 0 0 8px 0; font-size: 14px; }
+    .legend-item { margin-bottom: 4px; display: flex; align-items: center; }
+    .legend-color {
+      width: 18px; height: 18px;
+      margin-right: 8px; opacity: 0.7;
+      border: 1px solid #999;
+    }
+  </style>
+</head>
+<body>
+
+<div id="map"></div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.js"></script>
+
+<script>
+  // 1. Definição das Camadas Base
+  const osm = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    attribution: '© OpenStreetMap contributors'
+  });
+
+  const satellite = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+    attribution: 'Tiles &copy; Esri &mdash; Source: Esri, i-cubed, USDA, USGS, AEX, GeoEye, Getmapping, Aerogrid, IGN, IGP, UPR-EGP, and the GIS User Community'
+  });
+
+  const terrain = L.tileLayer('https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png', {
+    attribution: 'Map data: &copy; OpenStreetMap contributors, SRTM | Map style: &copy; OpenTopoMap (CC-BY-SA)'
+  });
+
+  // 2. Inicialização do Mapa com Camada Satélite por defeito
+  const map = L.map('map', {
+    center: [37.2555, -8.3965],
+    zoom: 10,
+    layers: [satellite] // Começa com satélite
+  });
+
+  // 3. Grupos de Dados
+  const drawnItems = new L.FeatureGroup().addTo(map);
+  const existingParcels = new L.FeatureGroup().addTo(map);
+
+  // 4. Controlo de Camadas (Topo Direito)
+  const baseMaps = {
+    "Satélite": satellite,
+    "Mapa Rua (OSM)": osm,
+    "Relevo": terrain
+  };
+
+  const overlayMaps = {
+    "Parcelas Existentes": existingParcels,
+    "Desenho Atual": drawnItems
+  };
+
+  L.control.layers(baseMaps, overlayMaps, { collapsed: false }).addTo(map);
+
+  // 5. Controles de Desenho
+  const drawControl = new L.Control.Draw({
+    draw: {
+      polyline: false, rectangle: false, circle: false,
+      marker: false, circlemarker: false,
+      polygon: { allowIntersection: false, showArea: true }
+    },
+    edit: { featureGroup: drawnItems, remove: true }
+  });
+  map.addControl(drawControl);
+
+  // 6. Legenda de Risco
+  const legend = L.control({position: 'bottomright'});
+  legend.onAdd = function () {
+    const div = L.DomUtil.create('div', 'legend');
+    div.innerHTML = `
+      <h4>Nível de Risco</h4>
+      <div class="legend-item"><span class="legend-color" style="background:#d32f2f"></span>Alta</div>
+      <div class="legend-item"><span class="legend-color" style="background:#f57c00"></span>Média</div>
+      <div class="legend-item"><span class="legend-color" style="background:#388e3c"></span>Baixa</div>
+    `;
+    return div;
+  };
+  legend.addTo(map);
+
+  // 7. Funções de Estilo e Comunicação
+  function getRiskColor(risk) {
+    switch (risk) {
+        case 'High':   return '#d32f2f'; // Vermelho
+        case 'Medium': return '#f57c00'; // Laranja
+        case 'Low':    return '#388e3c'; // Verde
+        default:       return '#757575'; // Cinza (caso falhe)
+    }
+}
+
+  map.on(L.Draw.Event.CREATED, function (e) {
+  var layer = e.layer;
+  drawnItems.addLayer(layer);
+    
+    // Converte para GeoJSON
+    var shape = layer.toGeoJSON();
+    
+    // ENVIA PARA O PAI (Gradio)
+    window.parent.postMessage({
+        type: "parcel_geometry",
+        data: shape.geometry
+    }, "*");
+});
+
+function loadParcels(geojsonData) {
+    if (!geojsonData) return;
+    existingParcels.clearLayers();
+
+    const data = typeof geojsonData === 'string' ? JSON.parse(geojsonData) : geojsonData;
+
+    L.geoJSON(data, {
+        style: function(feature) {
+            const risk = feature.properties.risk_level;
+            return {
+                color: getRiskColor(risk),      // Cor da linha
+                fillColor: getRiskColor(risk),  // Cor do preenchimento
+                weight: 2,
+                opacity: 1,
+                fillOpacity: 0.4                // Transparência do preenchimento
+            };
+        },
+        onEachFeature: function(feature, layer) {
+            // Popup informativo ao clicar
+            layer.bindPopup(`
+                <div class="parcel-popup">
+                    <h3>${feature.properties.name}</h3>
+                    <p><b>Risco:</b> ${feature.properties.risk_level}</p>
+                    <p><b>Combustível:</b> ${feature.properties.vegetation_type}</p>
+                </div>
+            `);
+            existingParcels.addLayer(layer);
+        }
+    }).addTo(existingParcels);
+
+    if (existingParcels.getLayers().length > 0) {
+        map.fitBounds(existingParcels.getBounds(), { padding: [20, 20] });
+    }
+}
+
+  // 8. Listeners para o Gradio
+  window.onload = function() {
+    // Pede imediatamente
+    window.parent.postMessage({ type: 'request_parcels' }, '*');
+    
+    // Tenta novamente após 2 segundos (caso o Gradio tenha demorado a carregar a BD)
+    setTimeout(() => {
+        window.parent.postMessage({ type: 'request_parcels' }, '*');
+    }, 2000);
+};
+window.addEventListener('message', function(event) {
+    if (event.data.type === 'load_parcels') {
+        console.log("🗺️ Mapa: Recebido GeoJSON. A processar camadas...");
+        // Chama a função correta que já define cores e popups
+        loadParcels(event.data.geojson); 
+    }
+});
+</script>
+</body>
+</html>

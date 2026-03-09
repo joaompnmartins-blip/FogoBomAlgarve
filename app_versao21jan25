@@ -1,0 +1,615 @@
+mport sys
+import os
+import base64
+from pathlib import Path
+import json
+from datetime import datetime, timedelta
+import calendar as cal
+
+BASE_DIR = Path(__file__).resolve().parent
+LEAFLET_PATH = BASE_DIR / "leaflet_map.html"
+
+html_bytes = LEAFLET_PATH.read_bytes()
+encoded = base64.b64encode(html_bytes).decode("utf-8")
+
+MAP_IFRAME = f"""
+<iframe
+  id="map-iframe"
+  src="data:text/html;base64,{encoded}"
+  style="width:100%; height:500px; border:none;"
+></iframe>
+"""
+
+BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "backend"))
+sys.path.insert(0, BASE_DIR)
+
+os.environ.setdefault("DJANGO_SETTINGS_MODULE", "fire_mgmt.settings")
+
+import django
+django.setup()
+
+import gradio as gr
+import pandas as pd
+from parcels.models import FireParcel
+from operatives.models import Operative
+from fire_actions.models import FireAction
+from django.contrib.gis.geos import GEOSGeometry
+from django.db.models import Count, Q
+import requests
+
+# ============= PARCELS FUNCTIONS =============
+def save_parcel(name, vegetation, risk, geometry_json):
+    # Log para debug no terminal
+    print(f"Tentativa de guardar: {name}, Geometria: {geometry_json[:50]}...")
+
+    if not geometry_json or len(geometry_json.strip()) < 10:
+        return "Erro: O mapa não enviou a geometria. Tente desenhar novamente.", get_parcels_list(), ""
+    
+    try:
+        geometry_dict = json.loads(geometry_json)
+        geom = GEOSGeometry(json.dumps(geometry_dict), srid=4326)
+        
+        FireParcel.objects.create(
+            name=name,
+            vegetation_type=vegetation,
+            risk_level=risk,
+            geometry=geom
+        )
+        return f"✓ Parcela '{name}' guardada!", get_parcels_list(), reload_map_parcels()
+    except Exception as e:
+        return f"Erro técnico: {str(e)}", get_parcels_list(), ""
+    
+def get_parcels_list():
+    parcels = FireParcel.objects.all().values('id', 'name', 'vegetation_type', 'risk_level')
+    return [[p['id'], p['name'], p['vegetation_type'], p['risk_level']] for p in parcels]
+
+def get_parcels_geojson():
+    parcels = FireParcel.objects.all()
+    features = []
+    for parcel in parcels:
+        try:
+            geometry = json.loads(parcel.geometry.geojson)
+            features.append({
+                "type": "Feature",
+                "properties": {
+                    "id": parcel.id,
+                    "name": parcel.name,
+                    "risk_level": parcel.risk_level, # ESSENCIAL PARA A COR
+                    "vegetation_type": parcel.vegetation_type
+                },
+                "geometry": geometry
+            })
+        except: continue
+    return json.dumps({"type": "FeatureCollection", "features": features})
+
+def load_parcels_to_map():
+    geojson = get_parcels_geojson()
+    return f"""
+    <script>
+    (function() {{
+        const sendToIframe = () => {{
+            const iframe = document.getElementById('map-iframe');
+            if (iframe && iframe.contentWindow) {{
+                iframe.contentWindow.postMessage({{
+                    type: 'load_parcels',
+                    geojson: {geojson}
+                }}, '*');
+            }}
+        }};
+        setTimeout(sendToIframe, 500);
+        setTimeout(sendToIframe, 1500);
+        setTimeout(sendToIframe, 3000);
+    }})();
+    </script>
+    """
+
+def reload_map_parcels():
+    geojson = get_parcels_geojson()
+    return f"""
+    <script>
+    (function() {{
+        const iframe = document.getElementById('map-iframe');
+        if (iframe && iframe.contentWindow) {{
+            iframe.contentWindow.postMessage({{
+                type: 'load_parcels',
+                geojson: {geojson}
+            }}, '*');
+        }}
+    }})();
+    </script>
+    """
+def get_all_parcels_geojson():
+    """Retorna todas as parcelas da BD em formato GeoJSON"""
+    parcels = db.get_all_parcels()  # ou o método que você usa para obter parcelas
+    
+    features = []
+    for parcel in parcels:
+        feature = {
+            "type": "Feature",
+            "properties": {
+                "name": parcel.get("name", "Sem nome"),
+                "risk_level": parcel.get("risk_level", "Unknown"),
+                "vegetation_type": parcel.get("vegetation_type", "Desconhecido")
+            },
+            "geometry": parcel.get("geometry")  # Já deve estar em formato GeoJSON
+        }
+        features.append(feature)
+    
+    geojson = {
+        "type": "FeatureCollection",
+        "features": features
+    }
+    
+    return json.dumps(geojson)
+
+from django.core.serializers import serialize
+from parcels.models import FireParcel
+
+def get_parcels_geojson():
+    parcels = FireParcel.objects.all()
+    # Importante: fields deve corresponder aos nomes no seu modelo Django
+    return serialize('geojson', parcels, geometry_field='geometry', 
+                     fields=('name', 'vegetation_type', 'risk_level'))
+
+# ============= OPERATIVES FUNCTIONS =============
+def create_operative(name, email, phone, certification):
+    try:
+        Operative.objects.create(
+            name=name,
+            email=email,
+            phone=phone,
+            certification_level=certification
+        )
+        return f"✓ Operative '{name}' created successfully!", get_operatives_list()
+    except Exception as e:
+        return f"Error creating operative: {str(e)}", get_operatives_list()
+
+def update_operative(operative_id, name, email, phone, certification):
+    try:
+        operative = Operative.objects.get(id=operative_id)
+        operative.name = name
+        operative.email = email
+        operative.phone = phone
+        operative.certification_level = certification
+        operative.save()
+        return f"✓ Operative updated successfully!", get_operatives_list()
+    except Operative.DoesNotExist:
+        return "Error: Operative not found", get_operatives_list()
+    except Exception as e:
+        return f"Error updating operative: {str(e)}", get_operatives_list()
+
+def delete_operative(operative_id):
+    try:
+        operative = Operative.objects.get(id=operative_id)
+        name = operative.name
+        operative.delete()
+        return f"✓ Operative '{name}' deleted successfully!", get_operatives_list()
+    except Operative.DoesNotExist:
+        return "Error: Operative not found", get_operatives_list()
+    except Exception as e:
+        return f"Error deleting operative: {str(e)}", get_operatives_list()
+
+def get_operatives_list():
+    operatives = Operative.objects.all().values('id', 'name', 'email', 'phone', 'certification_level')
+    return [[op['id'], op['name'], op['email'], op['phone'], op['certification_level']] for op in operatives]
+
+def load_operative_details(evt: gr.SelectData):
+    operative_id = evt.value[0] if evt.value else None
+    if not operative_id:
+        return None, "", "", "", ""
+    
+    try:
+        operative = Operative.objects.get(id=operative_id)
+        return operative.id, operative.name, operative.email, operative.phone, operative.certification_level
+    except:
+        return None, "", "", "", ""
+
+# ============= FIRE ACTIONS FUNCTIONS =============
+def create_fire_action(name, scheduled_date, parcel_ids, operative_ids, notes, photos):
+    try:
+        action = FireAction.objects.create(
+            name=name,
+            scheduled_date=scheduled_date,
+            notes=notes
+        )
+        
+        if parcel_ids:
+            parcels = FireParcel.objects.filter(id__in=parcel_ids)
+            action.parcels.set(parcels)
+        
+        if operative_ids:
+            operatives = Operative.objects.filter(id__in=operative_ids)
+            action.operatives.set(operatives)
+        
+        if photos:
+            action.notes += f"\n\n[{len(photos)} photo(s) uploaded]"
+            action.save()
+        
+        return f"✓ Fire Action '{name}' created successfully!", get_fire_actions_list()
+    except Exception as e:
+        return f"Error creating fire action: {str(e)}", get_fire_actions_list()
+
+def get_fire_actions_list():
+    actions = FireAction.objects.all()
+    result = []
+    for action in actions:
+        parcel_names = ", ".join([p.name for p in action.parcels.all()])
+        operative_names = ", ".join([o.name for o in action.operatives.all()])
+        result.append([
+            action.id,
+            action.name,
+            str(action.scheduled_date),
+            action.status,
+            parcel_names,
+            operative_names
+        ])
+    return result
+
+def get_parcel_choices():
+    parcels = FireParcel.objects.all()
+    return [(f"{p.name} ({p.risk_level})", p.id) for p in parcels]
+
+def get_operative_choices():
+    operatives = Operative.objects.all()
+    return [(f"{o.name} - {o.certification_level}", o.id) for o in operatives]
+
+# ============= CALENDAR FUNCTIONS =============
+def generate_calendar_view(year, month):
+    actions = FireAction.objects.filter(
+        scheduled_date__year=year,
+        scheduled_date__month=month
+    )
+    
+    action_dates = {}
+    for action in actions:
+        date_key = action.scheduled_date.day
+        if date_key not in action_dates:
+            action_dates[date_key] = []
+        action_dates[date_key].append(action.name)
+    
+    cal_obj = cal.monthcalendar(year, month)
+    month_name = cal.month_name[month]
+    
+    html = f"<h3>{month_name} {year}</h3><table style='width:100%; border-collapse: collapse;'>"
+    html += "<tr><th>Mon</th><th>Tue</th><th>Wed</th><th>Thu</th><th>Fri</th><th>Sat</th><th>Sun</th></tr>"
+    
+    for week in cal_obj:
+        html += "<tr>"
+        for day in week:
+            if day == 0:
+                html += "<td style='padding:10px; border:1px solid #ddd;'></td>"
+            else:
+                style = "padding:10px; border:1px solid #ddd;"
+                if day in action_dates:
+                    style += "background-color:#000000;"
+                html += f"<td style='{style}'><strong>{day}</strong>"
+                if day in action_dates:
+                    for action_name in action_dates[day]:
+                        html += f"<br/><small>🔥 {action_name}</small>"
+                html += "</td>"
+        html += "</tr>"
+    html += "</table>"
+    
+    return html
+
+# ============= WEATHER FUNCTIONS =============
+def get_weather_forecast(location="Algarve, PT"):
+    try:
+        lat, lon = 37.2555, -8.3965
+        url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&daily=temperature_2m_max,temperature_2m_min,precipitation_sum,windspeed_10m_max&timezone=auto&forecast_days=7"
+        response = requests.get(url, timeout=5)
+        data = response.json()
+        
+        daily = data['daily']
+        forecast_html = "<h3>7-Day Weather Forecast</h3>"
+        forecast_html += "<table style='width:100%; border-collapse: collapse;'>"
+        forecast_html += "<tr><th>Date</th><th>Temp (°C)</th><th>Precipitation (mm)</th><th>Wind (km/h)</th></tr>"
+        
+        for i in range(len(daily['time'])):
+            date = daily['time'][i]
+            temp_max = daily['temperature_2m_max'][i]
+            temp_min = daily['temperature_2m_min'][i]
+            precip = daily['precipitation_sum'][i]
+            wind = daily['windspeed_10m_max'][i]
+            
+            forecast_html += f"""
+            <tr style='border:1px solid #ddd;'>
+                <td style='padding:8px;'>{date}</td>
+                <td style='padding:8px;'>{temp_min}° - {temp_max}°</td>
+                <td style='padding:8px;'>{precip}</td>
+                <td style='padding:8px;'>{wind}</td>
+            </tr>
+            """
+        forecast_html += "</table>"
+        return forecast_html
+    except Exception as e:
+        return f"<p>Unable to fetch weather data: {str(e)}</p>"
+
+# ============= REPORTS FUNCTIONS =============
+def generate_report(report_type):
+    if report_type == "Resumo Parcelas":
+        parcels = FireParcel.objects.all()
+        data = {
+            'Name': [p.name for p in parcels],
+            'Vegetation': [p.vegetation_type for p in parcels],
+            'Risk Level': [p.risk_level for p in parcels],
+        }
+        df = pd.DataFrame(data)
+        summary = f"**Total Parcels:** {len(parcels)}\n\n**Risk Distribution:**\n"
+        risk_counts = parcels.values('risk_level').annotate(count=Count('risk_level'))
+        for item in risk_counts:
+            summary += f"- {item['risk_level']}: {item['count']}\n"
+        return summary, df
+    
+    elif report_type == "Resumo Operacionais":
+        operatives = Operative.objects.all()
+        data = {
+            'Name': [o.name for o in operatives],
+            'Email': [o.email for o in operatives],
+            'Certification': [o.certification_level for o in operatives],
+            'Actions': [o.fire_actions.count() for o in operatives],
+        }
+        df = pd.DataFrame(data)
+        summary = f"**Total Operatives:** {len(operatives)}\n\n**Certification Distribution:**\n"
+        cert_counts = operatives.values('certification_level').annotate(count=Count('certification_level'))
+        for item in cert_counts:
+            summary += f"- {item['certification_level']}: {item['count']}\n"
+        return summary, df
+    
+    elif report_type == "Resumo Ação Fogo":
+        actions = FireAction.objects.all()
+        data = {
+            'Name': [a.name for a in actions],
+            'Date': [str(a.scheduled_date) for a in actions],
+            'Status': [a.status for a in actions],
+            'Parcels': [a.parcels.count() for a in actions],
+            'Operatives': [a.operatives.count() for a in actions],
+        }
+        df = pd.DataFrame(data)
+        summary = f"**Total Fire Actions:** {len(actions)}\n\n**Status Distribution:**\n"
+        status_counts = actions.values('status').annotate(count=Count('status'))
+        for item in status_counts:
+            summary += f"- {item['status']}: {item['count']}\n"
+        return summary, df
+    
+    return "Select a report type", pd.DataFrame()
+
+def export_data(export_type, file_format):
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    if export_type == "Parcelas":
+        parcels = FireParcel.objects.all()
+        data = {'ID': [p.id for p in parcels], 'Name': [p.name for p in parcels], 'Vegetation': [p.vegetation_type for p in parcels], 'Risk Level': [p.risk_level for p in parcels]}
+        df = pd.DataFrame(data)
+        filename = f"parcels_export_{timestamp}.csv"
+    elif export_type == "Operacionais":
+        operatives = Operative.objects.all()
+        data = {'ID': [o.id for o in operatives], 'Name': [o.name for o in operatives], 'Email': [o.email for o in operatives], 'Certification': [o.certification_level for o in operatives]}
+        df = pd.DataFrame(data)
+        filename = f"operatives_export_{timestamp}.csv"
+    elif export_type == "Ações Fogo":
+        actions = FireAction.objects.all()
+        data = {'ID': [a.id for a in actions], 'Name': [a.name for a in actions], 'Date': [str(a.scheduled_date) for a in actions], 'Status': [a.status for a in actions]}
+        df = pd.DataFrame(data)
+        filename = f"fire_actions_export_{timestamp}.csv"
+    else:
+        return None
+    
+    filepath = f"/tmp/{filename}"
+    if file_format == "CSV":
+        df.to_csv(filepath, index=False)
+    else:
+        filepath = filepath.replace('.csv', '.json')
+        df.to_json(filepath, orient='records', indent=2)
+    return filepath
+
+# ============= GRADIO APP =============
+HEAD_JS = """
+<style>
+    .hidden-textbox { display: none !important; }
+</style>
+<script>
+function sendParcelsToMap() {
+    const iframe = document.getElementById('map-iframe');
+    const container = document.getElementById('geojson-data-input');
+    // O Gradio coloca o valor dentro de um textarea dentro do container
+    const textarea = container ? container.querySelector('textarea') : null;
+
+    if (iframe && iframe.contentWindow && textarea && textarea.value) {
+        console.log("✅ Componente e dados encontrados. Enviando...");
+        iframe.contentWindow.postMessage({
+            type: 'load_parcels',
+            geojson: JSON.parse(textarea.value)
+        }, '*');
+    } else {
+        // Log detalhado para saber exatamente o que o JS não está a ver
+        console.log(`⏳ Aguardando: Iframe(${!!iframe}) | Container(${!!container}) | Texto(${!!textarea})`);
+        setTimeout(sendParcelsToMap, 2000);
+    }
+}
+
+// Ouvir mensagens vindas do mapa
+window.addEventListener("message", (event) => {
+    // Quando o Leaflet envia 'request_parcels' (no onload dele)
+    if (event.data && event.data.type === "request_parcels") {
+        console.log("📨 Mapa solicitou parcelas");
+        sendParcelsToMap();
+    }
+    
+    // Captura de novos desenhos
+    if (event.data && event.data.type === "parcel_geometry") {
+        console.log("🗺️ Nova geometria recebida do mapa");
+        const textareas = document.querySelectorAll('textarea');
+        for (let ta of textareas) {
+            if (ta.closest('.block').textContent.includes('Geometry JSON (auto-filled)')) {
+                ta.value = JSON.stringify(event.data.data);
+                ta.dispatchEvent(new Event('input', { bubbles: true }));
+                console.log("✅ Geometria preenchida no campo");
+                break;
+            }
+        }
+    }
+});
+
+// Envia automaticamente quando a página carrega
+window.addEventListener('load', function() {
+    console.log("🚀 Página carregada, aguardando dados...");
+    setTimeout(sendParcelsToMap, 1000);
+    setTimeout(sendParcelsToMap, 2000);
+    setTimeout(sendParcelsToMap, 3000);
+});
+</script>
+"""
+
+# 2. Inicie o bloco SEM o argumento head
+with gr.Blocks(title="Fogo Bom Algarve") as app:
+ 
+    geojson_data_hidden = gr.Textbox(
+    visible=True,           # Mudamos para True para que o ID exista no HTML
+    elem_id="geojson-data-input", 
+    elem_classes="hidden-textbox" # Vamos usar esta classe para esconder via CSS
+)
+
+    # When the app loads or a button is clicked, fetch data
+    app.load(get_parcels_geojson, outputs=[geojson_data_hidden])
+
+    # JavaScript to "push" data to the Leaflet iframe
+    geojson_data_hidden.change(None, inputs=[geojson_data_hidden], js="""
+    (data) => {
+        const iframe = document.getElementById('map-iframe');
+        if (iframe && iframe.contentWindow) {
+        iframe.contentWindow.postMessage({ type: 'loadParcels', geojson: JSON.parse(data) }, '*');
+        }
+    }
+    """)
+    gr.Markdown("# 🔥 Sistema de Gestão de Fogo Controlado")
+    
+    with gr.Tabs():
+        with gr.Tab("🏠 Home"):
+            gr.Markdown("## Bem vindo ao Sistema de Gestão de Fogo Controlado")
+            with gr.Row():
+                gr.Markdown(f"**📍 Parcelas:** {FireParcel.objects.count()}")
+                gr.Markdown(f"**👥 Operacionais:** {Operative.objects.count()}")
+                gr.Markdown(f"**🔥 Ações:** {FireAction.objects.count()}")
+            
+            with gr.Row():
+                with gr.Column():
+                    weather_display = gr.HTML(get_weather_forecast())
+                    refresh_weather_btn = gr.Button("🔄 Refrescar Meteorologia")
+                with gr.Column():
+                    now = datetime.now()
+                    calendar_display = gr.HTML(generate_calendar_view(now.year, now.month))
+                    with gr.Row():
+                        cal_month = gr.Dropdown(choices=[(cal.month_name[i], i) for i in range(1, 13)], value=now.month, label="Mês")
+                        cal_year = gr.Number(value=now.year, label="Ano", precision=0)
+                    update_cal_btn = gr.Button("Atualizar Calendário")
+            
+            refresh_weather_btn.click(get_weather_forecast, outputs=weather_display)
+            update_cal_btn.click(generate_calendar_view, inputs=[cal_year, cal_month], outputs=calendar_display)
+        
+        with gr.Tab("📍 Parcelas"):
+            gr.Markdown("## Gestão de áreas de Fogo Controlado")
+            
+            with gr.Row():
+                with gr.Column(scale=2):
+                    gr.HTML(MAP_IFRAME)
+                    map_loader = gr.HTML("") 
+                    refresh_map_btn = gr.Button("🔄 Recarregar Parcelas no Mapa")
+                    geometry = gr.Textbox(label="Geometry JSON (auto-filled)", lines=3)
+
+                with gr.Column(scale=1):
+                    gr.Markdown("### Detalhes da parcela")
+                    parcel_name = gr.Textbox(label="Designação", placeholder="e.g., Monchique Norte")
+                    parcel_vegetation = gr.Textbox(label="Tipo combustível", placeholder="e.g., Matos")
+                    parcel_risk = gr.Dropdown(["Low", "Medium", "High"], label="Perigosidade")
+                    save_parcel_btn = gr.Button("Guardar Parcela", variant="primary")
+                    parcel_output = gr.Textbox(label="Estado", interactive=False)
+
+            parcels_table = gr.Dataframe(headers=["ID", "Designação", "Combustível", "Risco"], value=get_parcels_list())
+            
+            save_parcel_btn.click(
+            save_parcel, 
+            inputs=[parcel_name, parcel_vegetation, parcel_risk, geometry], 
+            outputs=[parcel_output, parcels_table, map_loader]
+            ).then(
+            fn=get_parcels_geojson,
+            outputs=geojson_data_hidden
+            )
+            refresh_map_btn.click(
+            fn=get_parcels_geojson,
+            outputs=geojson_data_hidden
+            ).then(
+            fn=reload_map_parcels,
+            outputs=map_loader
+            )
+
+        with gr.Tab("👥 Operacionais"):
+            gr.Markdown("## Gestão de operacionais")
+            with gr.Row():
+                with gr.Column():
+                    operative_id_hidden = gr.State(value=None)
+                    op_name = gr.Textbox(label="Nome")
+                    op_email = gr.Textbox(label="Email")
+                    op_phone = gr.Textbox(label="Telefone")
+                    op_cert = gr.Dropdown(["Observador", "Operacional Queima", "Tecnico Fogo Controlado", "Outro"], label="Tipo")
+                    with gr.Row():
+                        create_op_btn = gr.Button("Criar", variant="primary")
+                        update_op_btn = gr.Button("Atualizar", variant="secondary")
+                    operative_output = gr.Textbox(label="Estado", interactive=False)
+                with gr.Column():
+                    operatives_table = gr.Dataframe(headers=["ID", "Nome", "Email", "Telefone", "Tipologia"], value=get_operatives_list())
+                    delete_op_id = gr.Number(label="ID a eliminar", precision=0)
+                    delete_op_btn = gr.Button("Eliminar Operacional", variant="stop")
+            
+            create_op_btn.click(create_operative, inputs=[op_name, op_email, op_phone, op_cert], outputs=[operative_output, operatives_table])
+            update_op_btn.click(update_operative, inputs=[operative_id_hidden, op_name, op_email, op_phone, op_cert], outputs=[operative_output, operatives_table])
+            delete_op_btn.click(delete_operative, inputs=[delete_op_id], outputs=[operative_output, operatives_table])
+            operatives_table.select(load_operative_details, outputs=[operative_id_hidden, op_name, op_email, op_phone, op_cert])
+
+        with gr.Tab("🔥 Ações"):
+            gr.Markdown("## Gestão de ações")
+            with gr.Row():
+                with gr.Column():
+                    action_name = gr.Textbox(label="Nome da Ação")
+                    action_date = gr.Textbox(label="Data (YYYY-MM-DD)")
+                    refresh_choices_btn = gr.Button("🔄 Atualizar Listas")
+                    action_parcels = gr.CheckboxGroup(choices=get_parcel_choices(), label="Parcelas")
+                    action_operatives = gr.CheckboxGroup(choices=get_operative_choices(), label="Operacionais")
+                    action_notes = gr.Textbox(label="Notas", lines=3)
+                    action_photos = gr.File(
+                        label="Carregar fotos (antes/depois, registos da ação)",
+                        file_count="multiple",
+                        file_types=["image"]
+                    )
+                    create_action_btn = gr.Button("Criar Ação", variant="primary")
+                    action_output = gr.Textbox(label="Estado", interactive=False)
+                with gr.Column():
+                    actions_table = gr.Dataframe(headers=["ID", "Nome", "Data", "Estado", "Parcelas", "Operacionais"], value=get_fire_actions_list())
+            
+            create_action_btn.click(create_fire_action, inputs=[action_name, action_date, action_parcels, action_operatives, action_notes,action_photos], outputs=[action_output, actions_table])
+            refresh_choices_btn.click(lambda: (gr.update(choices=get_parcel_choices()), gr.update(choices=get_operative_choices())), outputs=[action_parcels, action_operatives])
+
+        with gr.Tab("📊 Relatórios"):
+            with gr.Row():
+                with gr.Column():
+                    report_type = gr.Radio(["Resumo Parcelas", "Resumo Operacionais", "Resumo Ação Fogo"], label="Relatório", value="Resumo Parcelas")
+                    generate_report_btn = gr.Button("Gerar", variant="primary")
+                    report_summary = gr.Markdown()
+                    report_data = gr.Dataframe()
+                with gr.Column():
+                    export_type = gr.Radio(["Parcelas", "Operacionais", "Ações Fogo"], label="Exportar", value="Parcelas")
+                    export_format = gr.Radio(["CSV", "JSON"], label="Formato", value="CSV")
+                    export_btn = gr.Button("Exportar", variant="secondary")
+                    export_file = gr.File(label="Download")
+            
+            generate_report_btn.click(generate_report, inputs=[report_type], outputs=[report_summary, report_data])
+            export_btn.click(export_data, inputs=[export_type, export_format], outputs=export_file)
+            app.load(fn=get_parcels_geojson, outputs=geojson_data_hidden)
+            geojson_data_hidden.change(fn=None, js="() => { sendParcelsToMap(); }")
+            refresh_map_btn.click(fn=get_parcels_geojson, outputs=geojson_data_hidden)
+
+
+app.launch(
+    server_name="0.0.0.0", 
+    server_port=7860,
+    head=HEAD_JS  # O script vai aqui agora na versão 6.0
+)

@@ -1,0 +1,1069 @@
+import sys
+import os
+import base64
+from pathlib import Path
+import json
+from datetime import datetime, timedelta
+import calendar as cal
+import hashlib
+import secrets
+
+BASE_DIR = Path(__file__).resolve().parent
+LEAFLET_PATH = BASE_DIR / "leaflet_map.html"
+WEATHER_MAP_PATH = BASE_DIR / "leaflet_weather_map.html"
+
+# Carregar mapa de parcelas
+html_bytes = LEAFLET_PATH.read_bytes()
+encoded = base64.b64encode(html_bytes).decode("utf-8")
+
+MAP_IFRAME = f"""
+<iframe
+  id="map-iframe"
+  src="data:text/html;base64,{encoded}"
+  style="width:100%; height:500px; border:none;"
+></iframe>
+"""
+
+# Carregar mapa meteorológico
+try:
+    weather_html_bytes = WEATHER_MAP_PATH.read_bytes()
+    weather_encoded = base64.b64encode(weather_html_bytes).decode("utf-8")
+    WEATHER_MAP_IFRAME = f"""
+    <iframe
+      id="weather-map-iframe"
+      src="data:text/html;base64,{weather_encoded}"
+      style="width:100%; height:700px; border:none; border-radius:8px;"
+    ></iframe>
+    """
+except FileNotFoundError:
+    # Fallback se o arquivo não existir
+    WEATHER_MAP_IFRAME = """
+    <div style="padding:20px; background:#f0f0f0; border-radius:8px; text-align:center;">
+        <h3>⚠️ Mapa Meteorológico não disponível</h3>
+        <p>O arquivo leaflet_weather_map.html não foi encontrado.</p>
+        <p>Por favor, crie o arquivo com o conteúdo do mapa meteorológico.</p>
+    </div>
+    """
+
+BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "backend"))
+sys.path.insert(0, BASE_DIR)
+
+os.environ.setdefault("DJANGO_SETTINGS_MODULE", "fire_mgmt.settings")
+
+import django
+django.setup()
+
+import gradio as gr
+import pandas as pd
+from parcels.models import FireParcel
+from operatives.models import Operative
+from fire_actions.models import FireAction
+from django.contrib.gis.geos import GEOSGeometry
+from django.db.models import Count, Q
+from django.contrib.auth.models import User
+from django.contrib.auth import authenticate
+import requests
+
+# ============= AUTHENTICATION FUNCTIONS =============
+class SessionManager:
+    """Gestor de sessões de utilizadores"""
+    def __init__(self):
+        self.sessions = {}
+    
+    def create_session(self, username):
+        """Criar nova sessão"""
+        token = secrets.token_urlsafe(32)
+        self.sessions[token] = {
+            'username': username,
+            'created_at': datetime.now(),
+            'last_activity': datetime.now()
+        }
+        return token
+    
+    def validate_session(self, token):
+        """Validar se sessão existe e está ativa"""
+        if not token or token not in self.sessions:
+            return False
+        
+        session = self.sessions[token]
+        # Sessão expira após 8 horas de inatividade
+        if datetime.now() - session['last_activity'] > timedelta(hours=8):
+            del self.sessions[token]
+            return False
+        
+        # Atualizar última atividade
+        session['last_activity'] = datetime.now()
+        return True
+    
+    def get_username(self, token):
+        """Obter username da sessão"""
+        if self.validate_session(token):
+            return self.sessions[token]['username']
+        return None
+    
+    def logout(self, token):
+        """Terminar sessão"""
+        if token in self.sessions:
+            del self.sessions[token]
+
+# Instância global do gestor de sessões
+session_manager = SessionManager()
+
+def login_user(username, password):
+    """Autenticar utilizador"""
+    if not username or not password:
+        return None, "❌ Por favor preencha todos os campos"
+    
+    # Autenticar com Django
+    user = authenticate(username=username, password=password)
+    
+    if user is not None:
+        # Criar sessão
+        token = session_manager.create_session(username)
+        return token, f"✓ Bem-vindo, {username}!"
+    else:
+        return None, "❌ Credenciais inválidas"
+
+def logout_user(token):
+    """Terminar sessão do utilizador"""
+    session_manager.logout(token)
+    return None, "Sessão terminada. Por favor faça login novamente."
+
+def register_user(username, email, password, confirm_password):
+    """Registar novo utilizador"""
+    if not all([username, email, password, confirm_password]):
+        return "❌ Por favor preencha todos os campos"
+    
+    if password != confirm_password:
+        return "❌ As passwords não coincidem"
+    
+    if len(password) < 6:
+        return "❌ A password deve ter pelo menos 6 caracteres"
+    
+    if User.objects.filter(username=username).exists():
+        return "❌ Nome de utilizador já existe"
+    
+    if User.objects.filter(email=email).exists():
+        return "❌ Email já registado"
+    
+    try:
+        User.objects.create_user(username=username, email=email, password=password)
+        return f"✓ Utilizador '{username}' criado com sucesso! Pode fazer login agora."
+    except Exception as e:
+        return f"❌ Erro ao criar utilizador: {str(e)}"
+
+def check_authentication(token):
+    """Verificar se utilizador está autenticado"""
+    if session_manager.validate_session(token):
+        username = session_manager.get_username(token)
+        return True, f"👤 {username}"
+    return False, "🔒 Não autenticado"
+
+# ============= PARCELS FUNCTIONS (com autenticação) =============
+def save_parcel(token, name, resp_name, resp_email, veg_type, infra, owner, geometry_json):
+    is_auth, msg = check_authentication(token)
+    if not is_auth:
+        return msg, get_parcels_list(), ""
+    
+    print(f"Tentativa de guardar: {name}, Geometria: {geometry_json[:50]}...")
+
+    if not geometry_json or len(geometry_json.strip()) < 10:
+        return "Erro: O mapa não enviou a geometria. Tente desenhar novamente.", get_parcels_list(), ""
+    
+    try:
+        geometry_dict = json.loads(geometry_json)
+        geom = GEOSGeometry(json.dumps(geometry_dict), srid=4326)
+        
+        FireParcel.objects.create(
+            name=name,
+            resp_name=resp_name,
+            resp_email=resp_email,
+            vegetation_type=veg_type,
+            infrastructure=infra,
+            owner_info=owner,
+            geometry=geom
+        )
+        return f"✓ Parcela '{name}' guardada!", get_parcels_list(), reload_map_parcels()
+    except Exception as e:
+        return f"Erro técnico: {str(e)}", get_parcels_list(), ""
+    
+def get_parcels_list():
+    """
+    Obtém a lista de parcelas com os novos campos para exibição na tabela Gradio.
+    """
+    # Incluímos os novos campos no .values()
+    parcels = FireParcel.objects.all().values(
+        'id', 'name', 'resp_name', 'vegetation_type', 'infrastructure', 'owner_info'
+    )
+    
+    # Retornamos uma lista de listas (formato esperado pelo gr.Dataframe)
+    return [
+        [
+            p['id'], 
+            p['name'], 
+            p['resp_name'], 
+            p['vegetation_type'], 
+            p['infrastructure'], 
+            p['owner_info']
+        ] for p in parcels
+    ]
+
+def get_parcels_geojson():
+    """
+    Gera o GeoJSON para o mapa, incluindo os metadados dos novos campos nas propriedades.
+    """
+    parcels = FireParcel.objects.all()
+    features = []
+    for parcel in parcels:
+        try:
+            # Converte a geometria do Django para dicionário Python
+            geometry = json.loads(parcel.geometry.geojson)
+            
+            features.append({
+                "type": "Feature",
+                "properties": {
+                    "id": parcel.id,
+                    "name": parcel.name,
+                    "responsavel": parcel.resp_name,
+                    "email": parcel.resp_email,
+                    "vegetation_type": parcel.vegetation_type,
+                    "infraestrutura": parcel.infrastructure,
+                    "tem_proprietario": parcel.owner_info,
+                    
+                },
+                "geometry": geometry
+            })
+        except Exception as e:
+            print(f"Erro ao processar parcela {parcel.id}: {e}")
+            continue
+            
+    return json.dumps({"type": "FeatureCollection", "features": features})
+
+def reload_map_parcels():
+    geojson = get_parcels_geojson()
+    return f"""
+    <script>
+    (function() {{
+        const iframe = document.getElementById('map-iframe');
+        if (iframe && iframe.contentWindow) {{
+            iframe.contentWindow.postMessage({{
+                type: 'load_parcels',
+                geojson: {geojson}
+            }}, '*');
+        }}
+    }})();
+    </script>
+    """
+
+# ============= OPERATIVES FUNCTIONS (com autenticação) =============
+def create_operative(token, name, email, phone, certification):
+    is_auth, msg = check_authentication(token)
+    if not is_auth:
+        return msg, get_operatives_summary()
+    
+    if not name or not email:
+        return "❌ Nome e email são obrigatórios!", get_operatives_summary()
+    
+    try:
+        Operative.objects.create(
+            name=name,
+            email=email,
+            phone=phone,
+            certification_level=certification
+        )
+        return f"✓ Operacional '{name}' criado com sucesso!", get_operatives_summary()
+    except Exception as e:
+        return f"Erro ao criar operacional: {str(e)}", get_operatives_summary()
+
+def update_operative(token, operative_id, name, email, phone, certification):
+    is_auth, msg = check_authentication(token)
+    if not is_auth:
+        return msg, "*Não autenticado*"
+    
+    if not operative_id:
+        return "❌ Selecione um operacional primeiro!", "*Selecione um operacional na tabela para ver os detalhes*"
+    
+    if not name or not email:
+        return "❌ Nome e email são obrigatórios!", get_operative_details(operative_id)
+    
+    try:
+        operative = Operative.objects.get(id=operative_id)
+        operative.name = name
+        operative.email = email
+        operative.phone = phone
+        operative.certification_level = certification
+        operative.save()
+        
+        actions = operative.fire_actions.all()
+        actions_summary = f"### 📋 Detalhes de {operative.name}\n\n"
+        actions_summary += f"**ID:** {operative.id}\n\n"
+        actions_summary += f"✅ **Dados atualizados com sucesso!**\n\n"
+        actions_summary += f"**Ações Associadas:** {actions.count()}\n\n"
+        
+        if actions.exists():
+            actions_summary += "**Histórico de Ações:**\n"
+            for action in actions[:5]:
+                actions_summary += f"- {action.name} ({action.scheduled_date}) - {action.status}\n"
+            if actions.count() > 5:
+                actions_summary += f"\n... e mais {actions.count() - 5} ação(ões)"
+        else:
+            actions_summary += "*Nenhuma ação associada*"
+        
+        return f"✓ Operacional '{name}' atualizado com sucesso!", actions_summary
+    except Operative.DoesNotExist:
+        return "❌ Operacional não encontrado", "*Erro ao atualizar*"
+    except Exception as e:
+        return f"Erro ao atualizar: {str(e)}", "*Erro ao atualizar*"
+
+def delete_operative(token, operative_id):
+    is_auth, msg = check_authentication(token)
+    if not is_auth:
+        return msg, get_filtered_operatives("", "")
+    
+    if not operative_id:
+        return "❌ Selecione um operacional primeiro!", get_filtered_operatives("", "")
+    
+    try:
+        operative = Operative.objects.get(id=operative_id)
+        name = operative.name
+        
+        actions_count = operative.fire_actions.count()
+        if actions_count > 0:
+            return f"⚠️ Não é possível eliminar '{name}' - tem {actions_count} ação(ões) associada(s)!", get_filtered_operatives("", "")
+        
+        operative.delete()
+        return f"✓ Operacional '{name}' eliminado com sucesso!", get_filtered_operatives("", "")
+    except Operative.DoesNotExist:
+        return "❌ Operacional não encontrado", get_filtered_operatives("", "")
+    except Exception as e:
+        return f"Erro ao eliminar: {str(e)}", get_filtered_operatives("", "")
+
+def get_operatives_summary():
+    operatives = Operative.objects.all()
+    total = operatives.count()
+    by_cert = operatives.values('certification_level').annotate(count=Count('certification_level'))
+    
+    summary = f"**Total de Operacionais:** {total}\n\n"
+    summary += "**Distribuição por Certificação:**\n"
+    for item in by_cert:
+        summary += f"- {item['certification_level']}: {item['count']}\n"
+    
+    return summary
+
+def get_filtered_operatives(search_term, certification_filter):
+    operatives = Operative.objects.all()
+    
+    if search_term and search_term.strip():
+        operatives = operatives.filter(
+            Q(name__icontains=search_term) | 
+            Q(email__icontains=search_term) |
+            Q(phone__icontains=search_term)
+        )
+    
+    if certification_filter and certification_filter != "Todos":
+        operatives = operatives.filter(certification_level=certification_filter)
+    
+    result = []
+    for op in operatives:
+        actions_count = op.fire_actions.count()
+        result.append([
+            op.id,
+            op.name,
+            op.email,
+            op.phone,
+            op.certification_level,
+            actions_count
+        ])
+    
+    return result
+
+def load_operative_for_edit(evt: gr.SelectData, current_table_data):
+    try:
+        row_index = evt.index[0]
+        
+        if hasattr(current_table_data, 'values'):
+            table_list = current_table_data.values.tolist()
+        else:
+            table_list = current_table_data
+        
+        if not table_list or row_index >= len(table_list):
+            return None, "", "", "", "", "*Selecione um operacional na tabela para ver os detalhes*"
+        
+        operative_id = int(table_list[row_index][0])
+        
+        operative = Operative.objects.get(id=operative_id)
+        actions = operative.fire_actions.all()
+        
+        actions_summary = f"### 📋 Detalhes de {operative.name}\n\n"
+        actions_summary += f"**ID:** {operative.id}\n\n"
+        actions_summary += f"**Ações Associadas:** {actions.count()}\n\n"
+        
+        if actions.exists():
+            actions_summary += "**Histórico de Ações:**\n"
+            for action in actions[:5]:
+                actions_summary += f"- {action.name} ({action.scheduled_date}) - {action.status}\n"
+            if actions.count() > 5:
+                actions_summary += f"\n... e mais {actions.count() - 5} ação(ões)"
+        else:
+            actions_summary += "*Nenhuma ação associada*"
+        
+        return (
+            operative.id,
+            operative.name,
+            operative.email,
+            operative.phone,
+            operative.certification_level,
+            actions_summary
+        )
+    except Exception as e:
+        print(f"Erro ao carregar operacional: {str(e)}")
+        return None, "", "", "", "", f"*Erro ao carregar dados: {str(e)}*"
+
+def get_operative_details(operative_id):
+    try:
+        operative = Operative.objects.get(id=operative_id)
+        actions = operative.fire_actions.all()
+        
+        details = f"### 📋 Detalhes de {operative.name}\n\n"
+        details += f"**Email:** {operative.email}\n\n"
+        details += f"**Telefone:** {operative.phone}\n\n"
+        details += f"**Certificação:** {operative.certification_level}\n\n"
+        details += f"**Total de Ações:** {actions.count()}\n\n"
+        
+        if actions.exists():
+            details += "**Histórico de Ações:**\n"
+            for action in actions:
+                details += f"- {action.name} ({action.scheduled_date}) - {action.status}\n"
+        
+        return details
+    except:
+        return "Operacional não encontrado"
+
+# ============= FIRE ACTIONS FUNCTIONS =============
+def create_fire_action(token, name, scheduled_date, parcel_ids, operative_ids, notes, photos):
+    is_auth, msg = check_authentication(token)
+    if not is_auth:
+        return msg, get_fire_actions_list()
+    
+    try:
+        action = FireAction.objects.create(
+            name=name,
+            scheduled_date=scheduled_date,
+            notes=notes
+        )
+        
+        if parcel_ids:
+            parcels = FireParcel.objects.filter(id__in=parcel_ids)
+            action.parcels.set(parcels)
+        
+        if operative_ids:
+            operatives = Operative.objects.filter(id__in=operative_ids)
+            action.operatives.set(operatives)
+        
+        if photos:
+            action.notes += f"\n\n[{len(photos)} photo(s) uploaded]"
+            action.save()
+        
+        return f"✓ Fire Action '{name}' created successfully!", get_fire_actions_list()
+    except Exception as e:
+        return f"Error creating fire action: {str(e)}", get_fire_actions_list()
+
+def get_fire_actions_list():
+    actions = FireAction.objects.all()
+    result = []
+    for action in actions:
+        parcel_names = ", ".join([p.name for p in action.parcels.all()])
+        operative_names = ", ".join([o.name for o in action.operatives.all()])
+        result.append([
+            action.id,
+            action.name,
+            str(action.scheduled_date),
+            action.status,
+            parcel_names,
+            operative_names
+        ])
+    return result
+
+def get_parcel_choices():
+    parcels = FireParcel.objects.all()
+    return [(f"{p.name} ({p.vegetation_type})", p.id) for p in parcels]
+
+def get_operative_choices():
+    operatives = Operative.objects.all()
+    return [(f"{o.name} - {o.certification_level}", o.id) for o in operatives]
+
+# ============= CALENDAR & WEATHER FUNCTIONS =============
+def generate_calendar_view(year, month):
+    actions = FireAction.objects.filter(
+        scheduled_date__year=year,
+        scheduled_date__month=month
+    )
+    
+    action_dates = {}
+    for action in actions:
+        date_key = action.scheduled_date.day
+        if date_key not in action_dates:
+            action_dates[date_key] = []
+        action_dates[date_key].append(action.name)
+    
+    cal_obj = cal.monthcalendar(year, month)
+    month_name = cal.month_name[month]
+    
+    html = f"<h3>{month_name} {year}</h3><table style='width:100%; border-collapse: collapse;'>"
+    html += "<tr><th>Mon</th><th>Tue</th><th>Wed</th><th>Thu</th><th>Fri</th><th>Sat</th><th>Sun</th></tr>"
+    
+    for week in cal_obj:
+        html += "<tr>"
+        for day in week:
+            if day == 0:
+                html += "<td style='padding:10px; border:1px solid #ddd;'></td>"
+            else:
+                style = "padding:10px; border:1px solid #ddd;"
+                if day in action_dates:
+                    style += "background-color:#000000;"
+                html += f"<td style='{style}'><strong>{day}</strong>"
+                if day in action_dates:
+                    for action_name in action_dates[day]:
+                        html += f"<br/><small>🔥 {action_name}</small>"
+                html += "</td>"
+        html += "</tr>"
+    html += "</table>"
+    
+    return html
+
+def get_weather_forecast(location="Algarve, PT"):
+    try:
+        lat, lon = 37.2555, -8.3965
+        url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&daily=temperature_2m_max,temperature_2m_min,precipitation_sum,windspeed_10m_max&timezone=auto&forecast_days=7"
+        response = requests.get(url, timeout=5)
+        data = response.json()
+        
+        daily = data['daily']
+        forecast_html = "<h3>7-Day Weather Forecast</h3>"
+        forecast_html += "<table style='width:100%; border-collapse: collapse;'>"
+        forecast_html += "<tr><th>Date</th><th>Temp (°C)</th><th>Precipitation (mm)</th><th>Wind (km/h)</th></tr>"
+        
+        for i in range(len(daily['time'])):
+            date = daily['time'][i]
+            temp_max = daily['temperature_2m_max'][i]
+            temp_min = daily['temperature_2m_min'][i]
+            precip = daily['precipitation_sum'][i]
+            wind = daily['windspeed_10m_max'][i]
+            
+            forecast_html += f"""
+            <tr style='border:1px solid #ddd;'>
+                <td style='padding:8px;'>{date}</td>
+                <td style='padding:8px;'>{temp_min}° - {temp_max}°</td>
+                <td style='padding:8px;'>{precip}</td>
+                <td style='padding:8px;'>{wind}</td>
+            </tr>
+            """
+        forecast_html += "</table>"
+        return forecast_html
+    except Exception as e:
+        return f"<p>Unable to fetch weather data: {str(e)}</p>"
+
+# ============= REPORTS FUNCTIONS =============
+def generate_report(report_type):
+    if report_type == "Resumo Parcelas":
+        parcels = FireParcel.objects.all()
+        data = {
+            'Name': [p.name for p in parcels],
+            'Vegetation': [p.vegetation_type for p in parcels],
+            'Risk Level': [p.risk_level for p in parcels],
+        }
+        df = pd.DataFrame(data)
+        summary = f"**Total Parcels:** {len(parcels)}\n\n**Risk Distribution:**\n"
+        risk_counts = parcels.values('risk_level').annotate(count=Count('risk_level'))
+        for item in risk_counts:
+            summary += f"- {item['risk_level']}: {item['count']}\n"
+        return summary, df
+    
+    elif report_type == "Resumo Operacionais":
+        operatives = Operative.objects.all()
+        data = {
+            'Name': [o.name for o in operatives],
+            'Email': [o.email for o in operatives],
+            'Certification': [o.certification_level for o in operatives],
+            'Actions': [o.fire_actions.count() for o in operatives],
+        }
+        df = pd.DataFrame(data)
+        summary = f"**Total Operatives:** {len(operatives)}\n\n**Certification Distribution:**\n"
+        cert_counts = operatives.values('certification_level').annotate(count=Count('certification_level'))
+        for item in cert_counts:
+            summary += f"- {item['certification_level']}: {item['count']}\n"
+        return summary, df
+    
+    elif report_type == "Resumo Ação Fogo":
+        actions = FireAction.objects.all()
+        data = {
+            'Name': [a.name for a in actions],
+            'Date': [str(a.scheduled_date) for a in actions],
+            'Status': [a.status for a in actions],
+            'Parcels': [a.parcels.count() for a in actions],
+            'Operatives': [a.operatives.count() for a in actions],
+        }
+        df = pd.DataFrame(data)
+        summary = f"**Total Fire Actions:** {len(actions)}\n\n**Status Distribution:**\n"
+        status_counts = actions.values('status').annotate(count=Count('status'))
+        for item in status_counts:
+            summary += f"- {item['status']}: {item['count']}\n"
+        return summary, df
+    
+    return "Select a report type", pd.DataFrame()
+
+def export_data(export_type, file_format):
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    if export_type == "Parcelas":
+        parcels = FireParcel.objects.all()
+        data = {'ID': [p.id for p in parcels], 'Name': [p.name for p in parcels], 'Vegetation': [p.vegetation_type for p in parcels], 'Risk Level': [p.risk_level for p in parcels]}
+        df = pd.DataFrame(data)
+        filename = f"parcels_export_{timestamp}.csv"
+    elif export_type == "Operacionais":
+        operatives = Operative.objects.all()
+        data = {'ID': [o.id for o in operatives], 'Name': [o.name for o in operatives], 'Email': [o.email for o in operatives], 'Certification': [o.certification_level for o in operatives]}
+        df = pd.DataFrame(data)
+        filename = f"operatives_export_{timestamp}.csv"
+    elif export_type == "Ações Fogo":
+        actions = FireAction.objects.all()
+        data = {'ID': [a.id for a in actions], 'Name': [a.name for a in actions], 'Date': [str(a.scheduled_date) for a in actions], 'Status': [a.status for a in actions]}
+        df = pd.DataFrame(data)
+        filename = f"fire_actions_export_{timestamp}.csv"
+    else:
+        return None
+    
+    filepath = f"/tmp/{filename}"
+    if file_format == "CSV":
+        df.to_csv(filepath, index=False)
+    else:
+        filepath = filepath.replace('.csv', '.json')
+        df.to_json(filepath, orient='records', indent=2)
+    return filepath
+
+# ============= GRADIO APP WITH AUTHENTICATION =============
+HEAD_JS = """
+<style>
+    .hidden-textbox { display: none !important; }
+    .login-container { max-width: 500px; margin: 50px auto; padding: 30px; border-radius: 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
+</style>
+<script>
+function sendParcelsToMap() {
+    const iframe = document.getElementById('map-iframe');
+    const container = document.getElementById('geojson-data-input');
+    const textarea = container ? container.querySelector('textarea') : null;
+
+    if (iframe && iframe.contentWindow && textarea && textarea.value) {
+        iframe.contentWindow.postMessage({
+            type: 'load_parcels',
+            geojson: JSON.parse(textarea.value)
+        }, '*');
+    } else {
+        setTimeout(sendParcelsToMap, 1500);
+    }
+}
+
+window.addEventListener("message", (event) => {
+    if (event.data && event.data.type === "request_parcels") sendParcelsToMap();
+    
+    if (event.data && event.data.type === "parcel_geometry") {
+        const textareas = document.querySelectorAll('textarea');
+        for (let ta of textareas) {
+            if (ta.closest('.block').textContent.includes('Geometry JSON')) {
+                ta.value = JSON.stringify(event.data.data);
+                ta.dispatchEvent(new Event('input', { bubbles: true }));
+                break;
+            }
+        }
+    }
+});
+</script>
+"""
+
+def create_main_interface():
+    """Interface principal (requer autenticação)"""
+    with gr.Blocks() as main_app:
+        main_container = gr.Column(visible=False) 
+        with main_container:
+            session_token = gr.State(value=None)
+                
+        geojson_data_hidden = gr.Textbox(
+            visible=True,
+            elem_id="geojson-data-input", 
+            elem_classes="hidden-textbox"
+        )
+
+        main_app.load(get_parcels_geojson, outputs=[geojson_data_hidden])
+
+        # Header com info do utilizador e logout
+        with gr.Row():
+            gr.Markdown("# 🔥 Sistema de Gestão de Fogo Controlado")
+            with gr.Column(scale=1):
+                user_info = gr.Markdown("👤 Utilizador")
+                logout_btn = gr.Button("🚪 Terminar Sessão", size="sm", variant="secondary")
+        
+        gr.Markdown("---")
+        
+        with gr.Tabs():
+            with gr.Tab("🏠 Home"):
+                gr.Markdown("## Bem vindo ao Sistema de Gestão de Fogo Controlado")
+                with gr.Row():
+                    gr.Markdown(f"**📍 Parcelas:** {FireParcel.objects.count()}")
+                    gr.Markdown(f"**👥 Operacionais:** {Operative.objects.count()}")
+                    gr.Markdown(f"**🔥 Ações:** {FireAction.objects.count()}")
+                
+                with gr.Row():
+                    with gr.Column():
+                        weather_display = gr.HTML(get_weather_forecast())
+                        refresh_weather_btn = gr.Button("🔄 Refrescar Meteorologia")
+                    with gr.Column():
+                        now = datetime.now()
+                        calendar_display = gr.HTML(generate_calendar_view(now.year, now.month))
+                        with gr.Row():
+                            cal_month = gr.Dropdown(choices=[(cal.month_name[i], i) for i in range(1, 13)], value=now.month, label="Mês")
+                            cal_year = gr.Number(value=now.year, label="Ano", precision=0)
+                        update_cal_btn = gr.Button("Atualizar Calendário")
+                
+                refresh_weather_btn.click(get_weather_forecast, outputs=weather_display)
+                update_cal_btn.click(generate_calendar_view, inputs=[cal_year, cal_month], outputs=calendar_display)
+            
+            with gr.Tab("📍 Parcelas"):
+                gr.Markdown("## Gestão de áreas de Fogo Controlado")
+                
+                with gr.Row():
+                    with gr.Column(scale=2):
+                        gr.HTML(MAP_IFRAME)
+                        map_loader = gr.HTML("") 
+                        refresh_map_btn = gr.Button("🔄 Recarregar Parcelas no Mapa")
+                        geometry = gr.Textbox(label="Geometry JSON (auto-filled)", lines=3)
+
+                    with gr.Column(scale=1):
+                        gr.Markdown("### 📝 Registo de Parcela")
+                        p_name = gr.Textbox(label="Designação")
+                        p_resp = gr.Textbox(label="Responsável")
+                        p_email = gr.Textbox(label="Email")
+                        p_veg = gr.Dropdown(choices=["Matos", "Pinhal", "Eucaliptal", "Misto"], label="Vegetação")
+                        p_infra = gr.Dropdown(choices=["Sem informação","Inexistente", "Operacional", "Manutenção necessária"], label="Infraestrutura")
+                        p_owner = gr.Radio(choices=["Sim", "Não"], label="Info Proprietário")
+            
+                        btn_save = gr.Button("💾 Guardar Parcela", variant="primary")
+                        out_msg = gr.Markdown()
+
+                parcels_table = gr.Dataframe(
+                headers=["ID", "Nome", "Responsável", "Vegetação"],
+                value=get_parcels_list()
+                )
+                
+                btn_save.click(
+                    save_parcel, 
+                    inputs=[session_token, p_name, p_resp, p_email, p_veg, p_infra, p_owner, geometry], 
+                    outputs=[out_msg, parcels_table, map_loader]
+                ).then(
+                    fn=get_parcels_geojson,
+                    outputs=geojson_data_hidden
+                )
+                refresh_map_btn.click(
+                    fn=get_parcels_geojson,
+                    outputs=geojson_data_hidden
+                ).then(
+                    fn=reload_map_parcels,
+                    outputs=map_loader
+                )
+
+            with gr.Tab("➕ Registo de Operacionais"):
+                gr.Markdown("## Criar Novo Operacional")
+                
+                with gr.Row():
+                    with gr.Column():
+                        gr.Markdown("### 📝 Dados do Operacional")
+                        new_op_name = gr.Textbox(label="Nome Completo *", placeholder="Ex: João Silva")
+                        new_op_email = gr.Textbox(label="Email *", placeholder="joao.silva@example.com")
+                        new_op_phone = gr.Textbox(label="Telefone", placeholder="+351 912 345 678")
+                        new_op_cert = gr.Dropdown(
+                            ["Observador", "Operacional Queima", "Tecnico Fogo Controlado", "Outro"], 
+                            label="Certificação *",
+                            value="Observador"
+                        )
+                        
+                        create_new_op_btn = gr.Button("✓ Criar Operacional", variant="primary", size="lg")
+                        new_op_output = gr.Textbox(label="Estado", interactive=False)
+                        
+                        gr.Markdown("*Campos marcados com * são obrigatórios*")
+                    
+                    with gr.Column():
+                        gr.Markdown("### 📊 Estatísticas")
+                        operatives_stats = gr.Markdown(value=get_operatives_summary())
+                
+                create_new_op_btn.click(
+                    create_operative, 
+                    inputs=[session_token, new_op_name, new_op_email, new_op_phone, new_op_cert], 
+                    outputs=[new_op_output, operatives_stats]
+                ).then(
+                    lambda: ("", "", "", "Observador"),
+                    outputs=[new_op_name, new_op_email, new_op_phone, new_op_cert]
+                )
+
+            with gr.Tab("👥 Consulta de Operacionais"):
+                gr.Markdown("## Pesquisar e Gerir Operacionais")
+                
+                with gr.Row():
+                    search_box = gr.Textbox(
+                        label="🔍 Pesquisar",
+                        placeholder="Nome, email ou telefone...",
+                        scale=3
+                    )
+                    cert_filter = gr.Dropdown(
+                        ["Todos", "Observador", "Operacional Queima", "Tecnico Fogo Controlado", "Outro"],
+                        label="Filtrar por Certificação",
+                        value="Todos",
+                        scale=2
+                    )
+                    search_btn = gr.Button("Pesquisar", variant="secondary", scale=1)
+                
+                operatives_filtered_table = gr.Dataframe(
+                    headers=["ID", "Nome", "Email", "Telefone", "Certificação", "Nº Ações"],
+                    value=get_filtered_operatives("", ""),
+                    label="Operacionais (clique numa linha para editar)"
+                )
+                
+                gr.Markdown("---")
+                gr.Markdown("### ✏️ Editar Operacional Selecionado")
+                
+                with gr.Row():
+                    with gr.Column():
+                        edit_op_id = gr.State(value=None)
+                        edit_op_name = gr.Textbox(label="Nome", interactive=True)
+                        edit_op_email = gr.Textbox(label="Email", interactive=True)
+                        edit_op_phone = gr.Textbox(label="Telefone", interactive=True)
+                        edit_op_cert = gr.Dropdown(
+                            ["Observador", "Operacional Queima", "Tecnico Fogo Controlado", "Outro"],
+                            label="Certificação",
+                            interactive=True
+                        )
+                        
+                        with gr.Row():
+                            update_op_btn = gr.Button("💾 Guardar Alterações", variant="primary")
+                            delete_op_btn = gr.Button("🗑️ Eliminar", variant="stop")
+                        
+                        edit_op_output = gr.Textbox(label="Estado", interactive=False)
+                    
+                    with gr.Column():
+                        operative_details_panel = gr.Markdown(
+                            value="*Selecione um operacional na tabela para ver os detalhes*",
+                            visible=True
+                        )
+                
+                search_btn.click(
+                    get_filtered_operatives,
+                    inputs=[search_box, cert_filter],
+                    outputs=operatives_filtered_table
+                )
+                
+                operatives_filtered_table.select(
+                    load_operative_for_edit,
+                    inputs=[operatives_filtered_table],
+                    outputs=[edit_op_id, edit_op_name, edit_op_email, edit_op_phone, edit_op_cert, operative_details_panel]
+                )
+                
+                update_op_btn.click(
+                    update_operative,
+                    inputs=[session_token, edit_op_id, edit_op_name, edit_op_email, edit_op_phone, edit_op_cert],
+                    outputs=[edit_op_output, operative_details_panel]
+                ).then(
+                    get_filtered_operatives,
+                    inputs=[search_box, cert_filter],
+                    outputs=operatives_filtered_table
+                )
+                
+                delete_op_btn.click(
+                    delete_operative,
+                    inputs=[session_token, edit_op_id],
+                    outputs=[edit_op_output, operatives_filtered_table]
+                ).then(
+                    lambda: (None, "", "", "", "Observador", "*Selecione um operacional na tabela para ver os detalhes*"),
+                    outputs=[edit_op_id, edit_op_name, edit_op_email, edit_op_phone, edit_op_cert, operative_details_panel]
+                )
+
+            with gr.Tab("🔥 Ações"):
+                gr.Markdown("## Gestão de ações")
+                with gr.Row():
+                    with gr.Column():
+                        action_name = gr.Textbox(label="Nome da Ação")
+                        action_date = gr.Textbox(label="Data (YYYY-MM-DD)")
+                        refresh_choices_btn = gr.Button("🔄 Atualizar Listas")
+                        action_parcels = gr.CheckboxGroup(choices=get_parcel_choices(), label="Parcelas")
+                        action_operatives = gr.CheckboxGroup(choices=get_operative_choices(), label="Operacionais")
+                        action_notes = gr.Textbox(label="Notas", lines=3)
+                        action_photos = gr.File(
+                            label="Carregar fotos (antes/depois, registos da ação)",
+                            file_count="multiple",
+                            file_types=["image"]
+                        )
+                        create_action_btn = gr.Button("Criar Ação", variant="primary")
+                        action_output = gr.Textbox(label="Estado", interactive=False)
+                    with gr.Column():
+                        actions_table = gr.Dataframe(headers=["ID", "Nome", "Data", "Estado", "Parcelas", "Operacionais"], value=get_fire_actions_list())
+                
+                create_action_btn.click(
+                    create_fire_action, 
+                    inputs=[session_token, action_name, action_date, action_parcels, action_operatives, action_notes, action_photos], 
+                    outputs=[action_output, actions_table]
+                )
+                refresh_choices_btn.click(
+                    lambda: (gr.update(choices=get_parcel_choices()), gr.update(choices=get_operative_choices())), 
+                    outputs=[action_parcels, action_operatives]
+                )
+
+            with gr.Tab("📊 Relatórios"):
+                with gr.Row():
+                    with gr.Column():
+                        report_type = gr.Radio(["Resumo Parcelas", "Resumo Operacionais", "Resumo Ação Fogo"], label="Relatório", value="Resumo Parcelas")
+                        generate_report_btn = gr.Button("Gerar", variant="primary")
+                        report_summary = gr.Markdown()
+                        report_data = gr.Dataframe()
+                    with gr.Column():
+                        export_type = gr.Radio(["Parcelas", "Operacionais", "Ações Fogo"], label="Exportar", value="Parcelas")
+                        export_format = gr.Radio(["CSV", "JSON"], label="Formato", value="CSV")
+                        export_btn = gr.Button("Exportar", variant="secondary")
+                        export_file = gr.File(label="Download")
+                
+                generate_report_btn.click(generate_report, inputs=[report_type], outputs=[report_summary, report_data])
+                export_btn.click(export_data, inputs=[export_type, export_format], outputs=export_file)
+
+            with gr.Tab("🌦️ Meteorologia IPMA"):
+                gr.Markdown("## Dados Meteorológicos em Tempo Real")
+                gr.Markdown("""
+                Este mapa apresenta informações meteorológicas do **Instituto Português do Mar e da Atmosfera (IPMA)** 
+                através de serviços WMS. Ative as camadas desejadas usando o painel de controlo no mapa.
+                
+                **Camadas Disponíveis:**
+                - 🌧️ Precipitação Acumulada
+                - 🌡️ Temperatura Máxima
+                - 💨 Velocidade do Vento
+                - ☁️ Radar Meteorológico
+                - 🛰️ Imagem de Satélite
+                - 🔥 Risco de Incêndio
+                """)
+                
+                gr.HTML(WEATHER_MAP_IFRAME)
+                
+                with gr.Accordion("ℹ️ Informação sobre as Camadas", open=False):
+                    gr.Markdown("""
+                    ### Como usar o mapa:
+                    
+                    1. **Ativar Camadas**: Use os checkboxes no painel direito do mapa
+                    2. **Ajustar Opacidade**: Cada camada tem um controlo deslizante de transparência
+                    3. **Ver Legenda**: Aparece automaticamente quando uma camada é ativada
+                    4. **Navegar**: Use o mouse para zoom e pan no mapa
+                    
+                    ### Dados IPMA:
+                    Os dados são fornecidos pelo IPMA através de serviços WMS (Web Map Service).
+                    As informações são atualizadas regularmente pelo instituto.
+                    
+                    **Nota**: Algumas camadas podem não estar disponíveis dependendo da hora 
+                    e disponibilidade dos serviços do IPMA.
+                    """)
+                
+                with gr.Row():
+                    with gr.Column():
+                        gr.Markdown("### 📊 Previsão 7 Dias - Algarve")
+                        weather_forecast_display = gr.HTML(get_weather_forecast())
+                        refresh_forecast_btn = gr.Button("🔄 Atualizar Previsão")
+                
+                refresh_forecast_btn.click(get_weather_forecast, outputs=weather_forecast_display)
+        
+        # Logout handler
+        def handle_logout(token):
+            logout_user(token)
+            return None, gr.update(visible=True), gr.update(visible=False)
+        
+        logout_btn.click(
+            handle_logout,
+            inputs=[session_token],
+            outputs=[session_token, login_interface]
+        )
+    
+    return main_app, session_token, user_info, main_container
+
+def create_login_interface():
+    """Interface de login"""
+    with gr.Blocks() as login_app:
+        gr.Markdown("# 🔥 Fogo Bom Algarve")
+        gr.Markdown("## Sistema de Gestão de Fogo Controlado")
+        
+        with gr.Tab("🔐 Login"):
+            with gr.Column(elem_classes="login-container"):
+                gr.Markdown("### Iniciar Sessão")
+                login_username = gr.Textbox(label="Nome de Utilizador", placeholder="username")
+                login_password = gr.Textbox(label="Password", type="password", placeholder="••••••••")
+                login_btn = gr.Button("Entrar", variant="primary", size="lg")
+                login_message = gr.Textbox(label="Estado", interactive=False)
+        
+        with gr.Tab("📝 Registo"):
+            with gr.Column(elem_classes="login-container"):
+                gr.Markdown("### Criar Nova Conta")
+                reg_username = gr.Textbox(label="Nome de Utilizador *", placeholder="username")
+                reg_email = gr.Textbox(label="Email *", placeholder="email@example.com")
+                reg_password = gr.Textbox(label="Password *", type="password", placeholder="Mínimo 6 caracteres")
+                reg_confirm = gr.Textbox(label="Confirmar Password *", type="password", placeholder="••••••••")
+                reg_btn = gr.Button("Criar Conta", variant="primary", size="lg")
+                reg_message = gr.Textbox(label="Estado", interactive=False)
+                gr.Markdown("*Após criar a conta, use o tab Login para entrar*")
+        
+        # Register handler
+        reg_btn.click(
+            register_user,
+            inputs=[reg_username, reg_email, reg_password, reg_confirm],
+            outputs=reg_message
+        )
+    
+    return login_app, login_btn, login_username, login_password, login_message
+
+# ============= MAIN APP =============
+with gr.Blocks(title="Fogo Bom Algarve - Sistema de Gestão", head=HEAD_JS) as app:
+    # Criar ambas as interfaces
+    login_interface, login_btn, login_username, login_password, login_message = create_login_interface()
+    main_interface, session_token, user_info, main_container= create_main_interface()
+    
+    # Mostrar login por padrão
+    login_interface.visible = True
+    main_interface.visible = False
+    
+    # Login handler
+    def handle_login(username, password):
+        token, message = login_user(username, password)
+        if token:
+            # Login bem-sucedido
+            is_auth, user_text = check_authentication(token)
+            # ESTA PARTE DEVE SER ALTERADA PARA O FORMATO DE DICIONÁRIO
+            return {
+                session_token: token,
+                login_message: message,
+                login_interface: gr.update(visible=False),
+                main_container: gr.update(visible=True),
+                user_info: user_text,
+                login_username: "",
+                login_password: ""
+        }
+        else:
+        # Login falhado
+            return {
+                session_token: None,
+                login_message: message,
+                login_interface: gr.update(visible=True),
+                main_container: gr.update(visible=False),
+                user_info: "🔒 Não autenticado",
+                login_username: username,
+                login_password: ""
+        }
+    
+    login_btn.click(
+    handle_login,
+    inputs=[login_username, login_password],
+    outputs=[session_token, login_message, login_interface, main_container, user_info, login_username, login_password]
+)
+
+app.launch(
+    server_name="0.0.0.0",
+    server_port=7860,
+    auth=None  # Desativar auth do Gradio, usamos o nosso sistema
+)

@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8"/>
+  <title>Gestão de Fogo Total - EFFIS & Google</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.css"/>
+  <style>
+    body { margin: 0; padding: 0; }
+    #map { height: 500px; width: 100%; }
+    .legend { background: white; padding: 10px; border-radius: 8px; box-shadow: 0 1px 5px rgba(0,0,0,0.4); line-height: 18px; color: #555; font-family: sans-serif; }
+    .legend h4 { margin: 0 0 8px 0; font-size: 14px; }
+    .legend-item { display: flex; align-items: center; margin-bottom: 4px; font-size: 12px; }
+    .legend-color { width: 18px; height: 18px; margin-right: 8px; border: 1px solid #999; opacity: 0.7; }
+  </style>
+</head>
+<body>
+<div id="map"></div>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.js"></script>
+<script>
+  // 1. Mapas Base
+  const osm = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution: '© OSM' });
+  const googleSat = L.tileLayer('http://{s}.google.com/vt/lyrs=s&x={x}&y={y}&z={z}', {
+    maxZoom: 20, subdomains:['mt0','mt1','mt2','mt3'], attribution: '© Google Maps'
+  });
+
+  const map = L.map('map', { center: [37.2555, -8.3965], zoom: 10, layers: [googleSat] });
+
+  // 2. Camadas EFFIS (WMS) - Todos os 6 Índices
+  const effisUrl = 'https://maps.effis.emergency.copernicus.eu/effis?';
+  const createEffis = (layer) => L.tileLayer.wms(effisUrl, {
+    layers: `effis:${layer}`, format: 'image/png', transparent: true, opacity: 0.5, attribution: '© Copernicus EMS'
+  });
+
+  const fwi = createEffis('fwi_forecast');
+  const ffmc = createEffis('ffmc_forecast');
+  const dmc = createEffis('dmc_forecast');
+  const dc = createEffis('dc_forecast');   // Adicionado: Drought Code
+  const isi = createEffis('isi_forecast');
+  const bui = createEffis('bui_forecast'); // Adicionado: Build-Up Index
+
+  // 3. Grupos de Dados do Utilizador
+  const existingParcels = new L.FeatureGroup().addTo(map);
+  const drawnItems = new L.FeatureGroup().addTo(map);
+
+  // 4. Organização do Menu de Camadas
+  const baseMaps = { "Google Satélite": googleSat, "OpenStreetMap": osm };
+  const overlayMaps = {
+    "🔥 FWI (Índice Geral)": fwi,
+    "🍂 FFMC (Húm. Fina)": ffmc,
+    "🌲 DMC (Húm. Duff)": dmc,
+    "🏜️ DC (Seca Profunda)": dc,
+    "🌬️ ISI (Propagação)": isi,
+    "🪵 BUI (Combustível)": bui,
+    "📍 Minhas Parcelas": existingParcels,
+    "✍️ Desenho": drawnItems
+  };
+  L.control.layers(baseMaps, overlayMaps, { collapsed: false }).addTo(map);
+
+  // 5. Legenda Dinâmica Corrigida
+  const legend = L.control({position: 'bottomright'});
+  legend.onAdd = function() {
+    this._div = L.DomUtil.create('div', 'legend');
+    this.update('📍 Minhas Parcelas');
+    return this._div;
+  };
+
+  legend.update = function(name) {
+    let html = `<h4>${name}</h4>`;
+    // Se for camada de parcelas, usa a escala de Risco do utilizador
+    if (name.includes('Parcelas')) {
+        html += '<div class="legend-item"><span class="legend-color" style="background:#d32f2f"></span>Alta</div>' +
+                '<div class="legend-item"><span class="legend-color" style="background:#f57c00"></span>Média</div>' +
+                '<div class="legend-item"><span class="legend-color" style="background:#388e3c"></span>Baixa</div>';
+    } 
+    // Se for qualquer camada do EFFIS, usa a escala técnica de perigo
+    else {
+        html += '<div class="legend-item"><span class="legend-color" style="background:#800026"></span>Muito Extremo</div>' +
+                '<div class="legend-item"><span class="legend-color" style="background:#BD0026"></span>Extremo</div>' +
+                '<div class="legend-item"><span class="legend-color" style="background:#E31A1C"></span>Muito Elevado</div>' +
+                '<div class="legend-item"><span class="legend-color" style="background:#FC4E2A"></span>Elevado</div>' +
+                '<div class="legend-item"><span class="legend-color" style="background:#FD8D3C"></span>Moderado</div>' +
+                '<div class="legend-item"><span class="legend-color" style="background:#FEB24C"></span>Baixo</div>';
+    }
+    this._div.innerHTML = html;
+  };
+  legend.addTo(map);
+  map.on('overlayadd', e => legend.update(e.name));
+
+  // 6. Funções de Comunicação e Desenho
+  function getRiskColor(r) { return r === 'High' ? '#d32f2f' : r === 'Medium' ? '#f57c00' : '#388e3c'; }
+  
+  function loadParcels(data) {
+    existingParcels.clearLayers();
+    L.geoJSON(data, {
+      style: f => ({ color: getRiskColor(f.properties.risk_level), fillOpacity: 0.4 }),
+      onEachFeature: (f, l) => l.bindPopup(`<b>${f.properties.name}</b><br>Risco: ${f.properties.risk_level}`)
+    }).addTo(existingParcels);
+    if (existingParcels.getLayers().length > 0) map.fitBounds(existingParcels.getBounds());
+  }
+
+  window.addEventListener('message', e => { if (e.data.type === 'load_parcels') loadParcels(e.data.geojson); });
+
+  const drawControl = new L.Control.Draw({ 
+    edit: { featureGroup: drawnItems }, 
+    draw: { circle:false, marker:false, polyline:false, rectangle:false } 
+  });
+  map.addControl(drawControl);
+  map.on(L.Draw.Event.CREATED, e => {
+    drawnItems.addLayer(e.layer);
+    window.parent.postMessage({ type: "parcel_geometry", data: e.layer.toGeoJSON().geometry }, "*");
+  });
+
+  window.onload = () => window.parent.postMessage({ type: 'request_parcels' }, '*');
+</script>
+</body>
+</html>
