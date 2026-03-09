@@ -3044,7 +3044,7 @@ app.launch(
     server_port=7860,
     auth=None,
     allowed_paths=["./images", ".", str(MEDIA_DIR), str(BP_MEDIA_DIR)],
-    share=True,
+    share=False,
     theme=gr.themes.Default(primary_hue="stone", secondary_hue="orange"),
     css=CUSTOM_CSS,
     head=HEAD_JS)
