@@ -2207,7 +2207,7 @@ def create_main_interface():
         
         # Header com info do utilizador e logout
         gr.Image(
-            value=str(BASE_DIR / "images" / "banner_FBAlgarve.png"), 
+            value=str(Path(BASE_DIR) / "images" / "banner_FBAlgarve.png"), 
             show_label=False, 
             container=False, 
             interactive=False,
