@@ -1,8 +1,27 @@
 print("APP.PY STARTED", flush=True)
 import sys
 print("PYTHON:", sys.version, flush=True)
-
 print("importing os...", flush=True)
+import os
+print("importing base64...", flush=True)
+import base64
+print("importing pathlib...", flush=True)
+from pathlib import Path
+print("importing json...", flush=True)
+import json
+print("importing datetime...", flush=True)
+from datetime import datetime, timedelta
+print("importing calendar...", flush=True)
+import calendar as cal
+print("importing hashlib...", flush=True)
+import hashlib
+print("importing secrets...", flush=True)
+import secrets
+print("importing gradio...", flush=True)
+import gradio as gr
+print("importing pandas...", flush=True)
+import pandas as pd
+print("all imports done!", flush=True)
 
 import sys
 import os
