@@ -44,6 +44,28 @@ import calendar as cal
 import hashlib
 import secrets
 
+DJANGO_BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "backend"))
+sys.path.insert(0, DJANGO_BASE_DIR)
+
+# ── DEBUG: print paths and env vars at startup ──
+print("=== DEBUG ===")
+print("__file__:", __file__)
+print("DJANGO_BASE_DIR:", DJANGO_BASE_DIR)
+print("DJANGO_BASE_DIR exists:", os.path.exists(DJANGO_BASE_DIR))
+print("DB_HOST:", os.environ.get("DB_HOST"))
+print("DB_NAME:", os.environ.get("DB_NAME"))
+print("DB_USER:", os.environ.get("DB_USER"))
+print("DB_PORT:", os.environ.get("DB_PORT"))
+print("DB_PASSWORD set:", bool(os.environ.get("DB_PASSWORD")))
+print("=== END DEBUG ===")
+
+os.environ.setdefault("DJANGO_SETTINGS_MODULE", "fire_mgmt.settings")
+
+os.environ.setdefault("DJANGO_SETTINGS_MODULE", "fire_mgmt.settings")
+
+import django
+django.setup()
+
 BASE_DIR = Path(__file__).resolve().parent
 MEDIA_DIR = BASE_DIR / "media" / "preplan_photos"
 MEDIA_DIR.mkdir(parents=True, exist_ok=True)
@@ -151,27 +173,7 @@ def build_weather_map_iframe() -> str:
     ></iframe>
     """
 
-DJANGO_BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "backend"))
-sys.path.insert(0, DJANGO_BASE_DIR)
 
-# ── DEBUG: print paths and env vars at startup ──
-print("=== DEBUG ===")
-print("__file__:", __file__)
-print("DJANGO_BASE_DIR:", DJANGO_BASE_DIR)
-print("DJANGO_BASE_DIR exists:", os.path.exists(DJANGO_BASE_DIR))
-print("DB_HOST:", os.environ.get("DB_HOST"))
-print("DB_NAME:", os.environ.get("DB_NAME"))
-print("DB_USER:", os.environ.get("DB_USER"))
-print("DB_PORT:", os.environ.get("DB_PORT"))
-print("DB_PASSWORD set:", bool(os.environ.get("DB_PASSWORD")))
-print("=== END DEBUG ===")
-
-os.environ.setdefault("DJANGO_SETTINGS_MODULE", "fire_mgmt.settings")
-
-os.environ.setdefault("DJANGO_SETTINGS_MODULE", "fire_mgmt.settings")
-
-import django
-django.setup()
 
 import gradio as gr
 import pandas as pd
