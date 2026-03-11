@@ -32,4 +32,4 @@ COPY . .
 EXPOSE 7860
 
 # Start script: migrate then launch
-CMD ["sh", "-c", "cd backend && python manage.py migrate --noinput && cd .. && python gradio_app/app.py"]
+CMD ["sh", "-c", "cd backend && python3 manage.py migrate --noinput && cd .. && python3 gradio_app/app.py"]

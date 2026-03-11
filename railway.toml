@@ -3,6 +3,6 @@ builder = "dockerfile"
 dockerfilePath = "Dockerfile"
 
 [deploy]
-startCommand = "sh -c 'cd backend && python manage.py migrate --noinput && cd .. && python gradio_app/app.py'"
+startCommand = "sh -c 'cd backend && python3 manage.py migrate --noinput && cd .. && python3 gradio_app/app.py'"
 restartPolicyType = "on_failure"
 restartPolicyMaxRetries = 3
