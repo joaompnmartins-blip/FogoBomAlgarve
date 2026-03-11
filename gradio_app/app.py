@@ -1,27 +1,38 @@
 print("APP.PY STARTED", flush=True)
 import sys
 print("PYTHON:", sys.version, flush=True)
+
 print("importing os...", flush=True)
 import os
-print("importing base64...", flush=True)
+print("importing sys done", flush=True)
 import base64
-print("importing pathlib...", flush=True)
+print("importing base64 done", flush=True)
 from pathlib import Path
-print("importing json...", flush=True)
+print("importing pathlib done", flush=True)
 import json
-print("importing datetime...", flush=True)
+print("importing json done", flush=True)
 from datetime import datetime, timedelta
-print("importing calendar...", flush=True)
 import calendar as cal
-print("importing hashlib...", flush=True)
 import hashlib
-print("importing secrets...", flush=True)
 import secrets
-print("importing gradio...", flush=True)
+print("stdlib done", flush=True)
+
 import gradio as gr
-print("importing pandas...", flush=True)
+print("gradio done", flush=True)
 import pandas as pd
-print("all imports done!", flush=True)
+print("pandas done", flush=True)
+from parcels.models import FireParcel
+print("parcels done", flush=True)
+from operatives.models import Operative
+print("operatives done", flush=True)
+from fire_actions.models import FireAction, BurningPlan
+print("fire_actions done", flush=True)
+from django.contrib.gis.geos import GEOSGeometry
+print("geos done", flush=True)
+from django.db.models import Count, Q
+from django.contrib.auth.models import User
+from django.contrib.auth import authenticate
+print("ALL IMPORTS DONE", flush=True)
 
 import sys
 import os
