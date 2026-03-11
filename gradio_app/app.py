@@ -2,6 +2,8 @@ print("APP.PY STARTED", flush=True)
 import sys
 print("PYTHON:", sys.version, flush=True)
 
+print("importing os...", flush=True)
+
 import sys
 import os
 import base64
