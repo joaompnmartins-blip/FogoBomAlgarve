@@ -1,39 +1,3 @@
-print("APP.PY STARTED", flush=True)
-import sys
-print("PYTHON:", sys.version, flush=True)
-
-print("importing os...", flush=True)
-import os
-print("importing sys done", flush=True)
-import base64
-print("importing base64 done", flush=True)
-from pathlib import Path
-print("importing pathlib done", flush=True)
-import json
-print("importing json done", flush=True)
-from datetime import datetime, timedelta
-import calendar as cal
-import hashlib
-import secrets
-print("stdlib done", flush=True)
-
-import gradio as gr
-print("gradio done", flush=True)
-import pandas as pd
-print("pandas done", flush=True)
-from parcels.models import FireParcel
-print("parcels done", flush=True)
-from operatives.models import Operative
-print("operatives done", flush=True)
-from fire_actions.models import FireAction, BurningPlan
-print("fire_actions done", flush=True)
-from django.contrib.gis.geos import GEOSGeometry
-print("geos done", flush=True)
-from django.db.models import Count, Q
-from django.contrib.auth.models import User
-from django.contrib.auth import authenticate
-print("ALL IMPORTS DONE", flush=True)
-
 import sys
 import os
 import base64
@@ -44,27 +8,24 @@ import calendar as cal
 import hashlib
 import secrets
 
+# ── Django setup MUST come before any model imports ──────────────────────────
 DJANGO_BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "backend"))
 sys.path.insert(0, DJANGO_BASE_DIR)
-
-# ── DEBUG: print paths and env vars at startup ──
-print("=== DEBUG ===")
-print("__file__:", __file__)
-print("DJANGO_BASE_DIR:", DJANGO_BASE_DIR)
-print("DJANGO_BASE_DIR exists:", os.path.exists(DJANGO_BASE_DIR))
-print("DB_HOST:", os.environ.get("DB_HOST"))
-print("DB_NAME:", os.environ.get("DB_NAME"))
-print("DB_USER:", os.environ.get("DB_USER"))
-print("DB_PORT:", os.environ.get("DB_PORT"))
-print("DB_PASSWORD set:", bool(os.environ.get("DB_PASSWORD")))
-print("=== END DEBUG ===")
-
-os.environ.setdefault("DJANGO_SETTINGS_MODULE", "fire_mgmt.settings")
-
 os.environ.setdefault("DJANGO_SETTINGS_MODULE", "fire_mgmt.settings")
 
 import django
 django.setup()
+
+# ── Now safe to import Django models and other deps ───────────────────────────
+import gradio as gr
+import pandas as pd
+from parcels.models import FireParcel
+from operatives.models import Operative
+from fire_actions.models import FireAction, BurningPlan
+from django.contrib.gis.geos import GEOSGeometry
+from django.db.models import Count, Q
+from django.contrib.auth.models import User
+from django.contrib.auth import authenticate
 
 BASE_DIR = Path(__file__).resolve().parent
 MEDIA_DIR = BASE_DIR / "media" / "preplan_photos"
