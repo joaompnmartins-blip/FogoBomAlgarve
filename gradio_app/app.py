@@ -2601,11 +2601,14 @@ def create_main_interface():
                         pp_name    = gr.Textbox(label="Nome / Designação *")
                         pp_resp    = gr.Textbox(label="Responsável", placeholder="Nome do responsável...")
                         pp_date    = gr.DateTime(label="Data Indicativa", include_time=False, type="string")
-                        pp_parcels = gr.Dropdown(
-                            choices=get_parcel_choices(),
-                            label="Parcela(s) *",
-                            multiselect=True
-                        )
+                        with gr.Row():
+                            pp_parcels = gr.Dropdown(
+                                choices=get_parcel_choices(),
+                                label="Parcela(s) *",
+                                multiselect=True,
+                                scale=4
+                            )
+                            pp_refresh_parcels_btn = gr.Button("🔄", scale=1, min_width=60)
                         pp_notes  = gr.Textbox(label="Notas", lines=3)
                         pp_photos = gr.File(
                             label="Fotos da parcela (pré-fogo)",
@@ -2619,15 +2622,16 @@ def create_main_interface():
                         pp_msg = gr.Textbox(label="Estado", interactive=False)
 
                 def _pp_clear():
-                    return None, "### ➕ Novo Pré-Plano", "", "", None, [], "", None, "", []
+                    return None, "### ➕ Novo Pré-Plano", "", "", None, gr.update(choices=get_parcel_choices(), value=[]), "", None, "", []
 
                 def _pp_load_row(evt: gr.SelectData, tbl):
                     try:
                         row = tbl.values.tolist()[evt.index[0]] if hasattr(tbl, "values") else tbl[evt.index[0]]
                         pp_id, name, responsible, date, parcel_ids, notes, _, photos = load_preplan(int(row[0]))
-                        return pp_id, f"### ✏️ Editar — {name}", name, responsible, date, parcel_ids, notes, None, "", photos
+                        fresh_choices = get_parcel_choices()
+                        return pp_id, f"### ✏️ Editar — {name}", name, responsible, date, gr.update(choices=fresh_choices, value=parcel_ids), notes, None, "", photos
                     except Exception as e:
-                        return None, "### ➕ Novo Pré-Plano", "", "", None, [], "", None, f"Erro: {e}", []
+                        return None, "### ➕ Novo Pré-Plano", "", "", None, gr.update(choices=get_parcel_choices(), value=[]), "", None, f"Erro: {e}", []
 
                 _PP_OUTPUTS = [pp_id_state, pp_form_title, pp_name, pp_resp, pp_date, pp_parcels, pp_notes, pp_photos, pp_msg, pp_gallery]
 
@@ -2636,6 +2640,12 @@ def create_main_interface():
                     outputs=_PP_OUTPUTS
                 )
                 pp_clear_btn.click(_pp_clear, outputs=_PP_OUTPUTS)
+
+                # Refresh parcels dropdown on button click
+                def _pp_refresh_parcels():
+                    return gr.update(choices=get_parcel_choices())
+
+                pp_refresh_parcels_btn.click(_pp_refresh_parcels, outputs=[pp_parcels])
 
                 def _pp_save(pp_id, name, resp, date, parcels, notes, photos):
                     msg, tbl = save_preplan(pp_id, name, resp, date, parcels, notes, photos)
